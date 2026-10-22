@@ -1,0 +1,26 @@
+{
+  "name": "zipzips-laundry",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Sistem Informasi ZIP-ZIPS LAUNDRI — laundry kiloan, satuan, dan express (Bantul, Yogyakarta)",
+  "type": "module",
+  "workspaces": [
+    "backend",
+    "frontend"
+  ],
+  "scripts": {
+    "dev:backend": "npm run dev --workspace @zipzips/backend",
+    "dev:frontend": "npm run dev --workspace @zipzips/frontend",
+    "build": "npm run build --workspace @zipzips/frontend",
+    "test": "npm run test --workspace @zipzips/backend && npm run test --workspace @zipzips/frontend",
+    "typecheck": "npm run typecheck --workspace @zipzips/frontend",
+    "db:generate": "npm run db:generate --workspace @zipzips/backend",
+    "db:migrate": "npm run db:migrate --workspace @zipzips/backend",
+    "db:deploy": "npm run db:deploy --workspace @zipzips/backend",
+    "db:seed": "npm run db:seed --workspace @zipzips/backend",
+    "db:studio": "npm run db:studio --workspace @zipzips/backend"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

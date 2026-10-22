@@ -1,0 +1,390 @@
+// =============================================================================
+// Skema Prisma — ZIP-ZIPS LAUNDRI
+// =============================================================================
+//
+// Prinsip:
+//  1. Transaksi TIDAK PERNAH dihapus. Pembatalan memakai flag `voidedAt`.
+//  2. Status pesanan (proses laundry) TERPISAH dari status pembayaran
+//     (diturunkan dari totalDibayar vs total — tidak disimpan sebagai kolom).
+//  3. Harga & nama layanan di-SNAPSHOT di OrderItem agar nota lama tidak berubah.
+//  4. Stok TIDAK pernah dikurangi manual. Stok = SUM(qty StockMovement).
+//     Pengurangan otomatis hanya berlaku bila sudah ada ServiceConsumption
+//     (AturanBahan) yang disetujui pemilik — belum ada di MVP.
+//  5. Uang memakai Int (rupiah penuh, tanpa desimal).
+//  6. clientRequestId + idempotencyKey membuat pencatatan offline aman diulang.
+//
+// Referensi: docs/database-design.md
+// =============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  // Menghormati koneksi lewat SESSION pooler (port 5432) Supabase.
+  // Session mode (bukan transaction mode) wajib: Prisma Migrate & $transaction
+  // interaktif membutuhkan session state + prepared statement.
+  url      = env("DATABASE_URL")
+}
+
+// -----------------------------------------------------------------------------
+// ENUM
+// -----------------------------------------------------------------------------
+
+/// Peran pengguna. Satu outlet, tidak ada scoping wilayah.
+enum Role {
+  OWNER // Pemilik: akses penuh
+  KASIR // Kasir: POS, pembayaran, pelanggan
+  OPERATOR // Karangian: status pengerjaan saja
+}
+
+/// Satuan pada master layanan.
+enum SatuanLayanan {
+  KG // Cuci kiloan
+  ITEM // Cuci satuan
+}
+
+/// Status pengerjaan cucian. Terpisah dari status pembayaran.
+enum StatusOrder {
+  DITERIMA // Pesanan masuk, belum dicuci
+  PROSES // Sedang dicuci / drying
+  SELESAI // Selesai, siap diambil
+  DIAMBIL // Sudah diserahkan ke pelanggan
+}
+
+/// Metode pembayaran. QRIS dicatat MANUAL (belum integrasi API).
+enum MetodeBayar {
+  TUNAI
+  QRIS
+  TRANSFER
+}
+
+/// Kategori pengeluaran operasional.
+enum KategoriPengeluaran {
+  BAHAN_BAKU // Deterjen, pewangi, dll
+  GAJI
+  LISTRIK_GAS // Listrik, gas, air — termasuk biaya pengeringan
+  SEWA
+  TRANSPORTASI
+  PERAWATAN // Servis mesin
+  LAIN_LAIN
+}
+
+/// Kategori pemasukan di luar penjualan laundry.
+enum KategoriPemasukanLain {
+  PENJUALAN_BARANG // Laundry += barang (sapu, hanger, dll)
+  JASA_TAMBAHAN
+  LAIN_LAIN
+}
+
+/// Tipe mutasi stok. qty bertanda: MASUK positif, KELUAR/PENYESUAIAN negatif.
+enum TipeMutasiStok {
+  MASUK // Pembelian / openeran
+  KELUAR // Pemakaian
+  PENYESUAIAN // Hasil opname (bisa + atau -)
+}
+
+/// Satuan produk habis pakai.
+enum SatuanProduk {
+  ML
+  L
+  KG
+  PCS
+}
+
+/// Asal pencatatan pesanan (untuk membedakan transaksi offline yang tersinkron).
+enum SumberOrder {
+  ONLINE
+  OFFLINE
+}
+
+// -----------------------------------------------------------------------------
+// MODEL
+// -----------------------------------------------------------------------------
+
+model User {
+  id           String   @id @default(uuid())
+  nama         String
+  username     String   @unique
+  passwordHash String
+  role         Role
+  noHp         String?
+  aktif        Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  ordersCreated Order[]              @relation("OrderDibuat")
+  ordersVoided  Order[]              @relation("OrderDibatalkan")
+  payments      Payment[]
+  expenses      Expense[]
+  otherIncomes  OtherIncome[]
+  movements     StockMovement[]
+  statusChanges OrderStatusHistory[]
+  auditLogs     AuditLog[]
+
+  @@map("users")
+}
+
+/// Pelanggan. Data ini boleh kosong untuk pelanggan tanpa nomor HP.
+model Customer {
+  id        String   @id @default(uuid())
+  kode      String   @unique
+  nama      String
+  noHp      String?
+  alamat    String?
+  catatan   String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  orders Order[]
+
+  @@index([noHp])
+  @@index([nama])
+  @@map("customers")
+}
+
+/// Master layanan: Cuci Kiloan / Cuci Satuan / Cuci Express.
+model Service {
+  id           String        @id @default(uuid())
+  kode         String        @unique
+  nama         String
+  satuan       SatuanLayanan
+  hargaDefault Int
+  estimasiHari Int           @default(1)
+  deskripsi    String?
+  isAktif      Boolean       @default(true)
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  orderItems OrderItem[]
+
+  @@map("services")
+}
+
+/// Pesanan laundry. Header transaksi + status pengerjaan.
+model Order {
+  id              String  @id @default(uuid())
+  /// Nomor nota unik per hari, mis. ZZ-20261021-0007.
+  nomor           String  @unique
+  /// UUID dari klien. UNIQUE → replay offline tidak menghasilkan pesanan ganda.
+  clientRequestId String? @unique
+
+  customerId String?
+  customer   Customer? @relation(fields: [customerId], references: [id], onDelete: SetNull)
+
+  /// Snapshot identitas pelanggan pada saat transaksi (aman bila profil diedit).
+  namaPelanggan String
+  noHp          String?
+
+  statusOrder StatusOrder @default(DITERIMA)
+  sumber      SumberOrder @default(ONLINE)
+
+  subtotal     Int
+  diskon       Int @default(0)
+  total        Int
+  /// Dijumlahkan server. Status bayar = TURUNAN dari nilai ini vs `total`.
+  totalDibayar Int @default(0)
+
+  tanggalMasuk    DateTime  @default(now())
+  estimasiSelesai DateTime?
+  tanggalSelesai  DateTime?
+  tanggalDiambil  DateTime?
+
+  catatan           String?
+  catatanPengerjaan String?
+
+  createdById String
+  createdBy   User      @relation("OrderDibuat", fields: [createdById], references: [id])
+  voidedById  String?
+  voidedBy    User?     @relation("OrderDibatalkan", fields: [voidedById], references: [id])
+  voidedAt    DateTime?
+  voidAlasan  String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  items         OrderItem[]
+  payments      Payment[]
+  statusHistory OrderStatusHistory[]
+
+  @@index([tanggalMasuk])
+  @@index([statusOrder])
+  @@index([customerId])
+  @@index([namaPelanggan])
+  @@map("orders")
+}
+
+/// Baris item pesanan. Menyimpan snapshot harga & nama layanan.
+model OrderItem {
+  id          String        @id @default(uuid())
+  orderId     String
+  order       Order         @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  serviceId   String
+  service     Service       @relation(fields: [serviceId], references: [id])
+  /// Snapshot — harga master boleh berubah tanpa mengubah nota lama.
+  namaService String
+  satuan      SatuanLayanan
+  qty         Int
+  hargaSatuan Int
+  subtotal    Int
+  catatan     String?
+
+  @@index([orderId])
+  @@map("order_items")
+}
+
+/// Pembayaran. Setiap baris = satu peristiwa penerimaan kas.
+model Payment {
+  id      String @id @default(uuid())
+  orderId String
+  order   Order  @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  metode    MetodeBayar
+  nominal   Int
+  /// Selalu dihitung server dari sisa tagihan, tidak pernah dipercaya dari klien.
+  kembalian Int         @default(0)
+  /// Referensi manual QRIS (kode/menu merchant) bila metode QRIS.
+  referensi String?
+  catatan   String?
+
+  /// UNIQUE → klik ganda / retry jaringan tidak menghasilkan pembayaran ganda.
+  idempotencyKey String @unique
+
+  createdById String
+  createdBy   User     @relation(fields: [createdById], references: [id])
+  createdAt   DateTime @default(now())
+
+  @@index([orderId])
+  @@index([createdAt])
+  @@map("payments")
+}
+
+/// Riwayat perpindahan status pengerjaan (timeline di UI).
+model OrderStatusHistory {
+  id      String       @id @default(uuid())
+  orderId String
+  order   Order        @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  dari    StatusOrder?
+  ke      StatusOrder
+  olehId  String
+  oleh    User         @relation(fields: [olehId], references: [id])
+  catatan String?
+  pada    DateTime     @default(now())
+
+  @@index([orderId, pada])
+  @@map("order_status_history")
+}
+
+/// Pengeluaran operasional (bahan baku, gaji, listrik, sewa, dll).
+model Expense {
+  id          String              @id @default(uuid())
+  tanggal     DateTime            @default(now())
+  kategori    KategoriPengeluaran
+  keterangan  String
+  nominal     Int
+  metodeBayar MetodeBayar
+  /// Terhubung ke pembelian bahan baku bila relevan.
+  refType     String?
+  refId       String?
+  createdById String
+  createdBy   User                @relation(fields: [createdById], references: [id])
+  createdAt   DateTime            @default(now())
+
+  @@index([tanggal])
+  @@index([kategori])
+  @@map("expenses")
+}
+
+/// Pemasukan di luar penjualan laundry.
+model OtherIncome {
+  id          String                @id @default(uuid())
+  tanggal     DateTime              @default(now())
+  kategori    KategoriPemasukanLain
+  keterangan  String
+  nominal     Int
+  metodeBayar MetodeBayar
+  createdById String
+  createdBy   User                  @relation(fields: [createdById], references: [id])
+  createdAt   DateTime              @default(now())
+
+  @@index([tanggal])
+  @@map("other_incomes")
+}
+
+/// Produk habis pakai (deterjen, pewangi, dll). Stok dihitung dari StockMovement.
+model Product {
+  id                String       @id @default(uuid())
+  kode              String       @unique
+  nama              String
+  satuan            SatuanProduk
+  stokMinimum       Int          @default(0)
+  hargaBeliTerakhir Int?
+  isAktif           Boolean      @default(true)
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
+
+  movements StockMovement[]
+
+  @@map("products")
+}
+
+/// Mutasi stok — pembukuan (ledger), bukan pengurangan kolom stok.
+model StockMovement {
+  id          String         @id @default(uuid())
+  productId   String
+  product     Product        @relation(fields: [productId], references: [id], onDelete: Cascade)
+  tipe        TipeMutasiStok
+  /// Bertanda: MASUK positif, KELUAR & PENYESUAIAN negatif.
+  qty         Int
+  /// Denormalisasi saldo setelah mutasi ini — memudahkan audit.
+  stokSebelum Int?
+  stokSesudah Int?
+  refType     String?
+  refId       String?
+  tanggal     DateTime       @default(now())
+  keterangan  String?
+  createdById String
+  createdBy   User           @relation(fields: [createdById], references: [id])
+  createdAt   DateTime       @default(now())
+
+  @@index([productId, tanggal])
+  @@index([tanggal])
+  @@map("stock_movements")
+}
+
+/// Jejak audit untuk perubahan penting.
+model AuditLog {
+  id        String   @id @default(uuid())
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  aksi      String
+  entitas   String
+  entitasId String
+  detail    Json?
+  createdAt DateTime @default(now())
+
+  @@index([entitas, entitasId])
+  @@index([createdAt])
+  @@index([userId])
+  @@map("audit_logs")
+}
+
+/// Konfigurasi aplikasi (nama toko, alamat, nomor WhatsApp, dsb).
+model Setting {
+  key       String   @id
+  value     Json
+  updatedAt DateTime @updatedAt
+  updatedBy String?
+
+  @@map("settings")
+}
+
+/// Penghitung berurutan (mis. nomor nota harian). Diincremen secara atomik.
+model Counter {
+  key       String   @id
+  value     Int      @default(0)
+  updatedAt DateTime @updatedAt
+
+  @@map("counters")
+}

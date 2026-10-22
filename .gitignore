@@ -1,0 +1,39 @@
+# Dependencies
+node_modules/
+.npm/
+
+# Build output
+dist/
+build/
+.vite/
+*.tsbuildinfo
+
+# Environment — JANGAN pernah commit kredensial
+.env
+.env.local
+.env.*.local
+.env.development
+.env.production
+!.env.example
+
+# Logs
+*.log
+npm-debug.log*
+yarn-error.log*
+
+# Testing
+coverage/
+.vitest/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp
+
+# Prisma — database lokal
+backend/prisma/*.db
+backend/prisma/*.db-journal

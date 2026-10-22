@@ -1,0 +1,110 @@
+# Render Blueprint — ZIP-ZIPS LAUNDRI
+#
+# Cara pakai: Render Dashboard → New → Blueprint → pilih repo ini.
+# Render membaca file ini dan membuat dua layanan:
+#   1. zipzips-api  — REST API (Express 5 + Prisma 6)   [Web Service, Free]
+#   2. zipzips-web  — antarmuka React 19 (Vite 8)        [Static Site, Free]
+#
+# PENTING:
+# - Rahasia TIDAK ditulis di file ini. Nilai dengan `sync: false` diisi manual
+#   di dashboard Render pada sinkronisasi pertama.
+# - Database: Supabase Free. Isi DATABASE_URL dengan **SESSION POOLER**
+#   (port 5432), BUKAN transaction pooler (6543).
+# - Panduan lengkap: docs/architecture.md § 6 dan docs/implementation-plan.md P5.
+#
+# Catatan: field `region` tidak dapat diubah setelah layanan dibuat.
+
+services:
+  # ---------- Backend: REST API ----------
+  - type: web
+    name: zipzips-api
+    runtime: node
+    plan: free
+    region: singapore
+    rootDir: backend
+    # prisma CLI ada di devDependencies, jadi --include=dev wajib.
+    buildCommand: npm ci --include=dev && npx prisma generate
+    # Migrasi otomatis setiap deploy (non-destruktif: `migrate deploy` hanya
+    # menerapkan migrasi yang belum dijalankan, tidak menghapus data).
+    #
+    # CATATAN: `prisma db seed` SENGAJA TIDAK dijalankan di sini. Seed membuat
+    # password acak yang hanya dicetak ke terminal — tidak bisa dikirim lewat
+    # log Render. Jalankan seed sekali secara manual (lihat README § 3).
+    startCommand: npx prisma migrate deploy && npm start
+    healthCheckPath: /api/health
+    autoDeployTrigger: commit
+    envVars:
+      - key: NODE_ENV
+        value: production
+      # Rahasia — diisi di dashboard Render:
+      # DATABASE_URL (Supabase session pooler, port 5432, sslmode=require)
+      - key: DATABASE_URL
+        sync: false
+      # JWT_SECRET acak >= 32 karakter
+      - key: JWT_SECRET
+        sync: false
+      - key: JWT_EXPIRES_IN
+        value: 12h
+      # Origin frontend, TANPA trailing slash. Contoh:
+      #   https://zipzips-web.onrender.com
+      - key: CORS_ORIGIN
+        sync: false
+      - key: LOGIN_RATE_LIMIT
+        value: "10"
+      - key: LOG_LEVEL
+        value: info
+
+  # ---------- Frontend: SPA statis ----------
+  - type: web
+    name: zipzips-web
+    runtime: static
+    rootDir: frontend
+    # vite + tailwind ada di devDependencies.
+    buildCommand: npm ci --include=dev && npm run build
+    staticPublishPath: ./dist
+    autoDeployTrigger: commit
+    envVars:
+      # URL backend — TANPA /api di akhir.
+      # Semua path di frontend sudah diawali "/api" (mis. "/api/orders"),
+      # jadi URL ini hanya origin. Menambahkan "/api" lagi akan menghasilkan
+      # "/api/api/orders" dan semua request 404.
+      #
+      # Catatan: VITE_* di-inline saat build → mengubahnya butuh REBUILD,
+      # bukan restart.
+      - key: VITE_API_URL
+        value: https://zipzips-api.onrender.com
+    # SPA: semua rute diarahkan ke index.html agar React Router bekerja
+    # (menyfokuskan /pesanan/abc harus memuat aplikasi, bukan 404).
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
+    # Header keamanan dasar + kebijakan cache.
+    #
+    # Catatan presedensi (terverifikasi): bila beberapa aturan cocok, Render
+    # memakai aturan dengan path PALING SPESIFIK. Jadi aturan `/assets/*`
+    # menang untuk aset, dan `/*` berlaku untuk sisanya (HTML/SPA). Keduanya
+    # aman berdampingan (tidak tumpang-tindih hasil).
+    headers:
+      # Aset ber-hash (nama file berubah tiap build): cache lama & immutable.
+      - path: /assets/*
+        name: Cache-Control
+        value: public, max-age=31536000, immutable
+      # Halaman HTML/SPA: jangan disimpan, agar deploy baru langsung terpakai.
+      - path: /*
+        name: Cache-Control
+        value: no-store
+      - path: /*
+        name: X-Content-Type-Options
+        value: nosniff
+      - path: /*
+        name: X-Frame-Options
+        value: sameorigin
+      - path: /*
+        name: Referrer-Policy
+        value: strict-origin-when-cross-origin
+      # Halaman ini butuh izin connect ke API (cross-origin) — CSP di sini
+      # sengaja tidak mengunci connect-src agar tidak perlu diubah tiap deploy.
+      - path: /*
+        name: Permissions-Policy
+        value: camera=(), microphone=(), geolocation=()

@@ -1,0 +1,97 @@
+# =============================================================================
+# Backup database — ZIP-ZIPS LAUNDRI
+# =============================================================================
+# Supabase Free TIDAK menyediakan auto-backup, jadi backup dijadwalkan di sini.
+#
+# Alur:
+#   cron (02:00 WIB) → pg_dump → gzip → artifact GitHub (retensi 14 hari)
+#
+# Secret yang dibutuhkan (Settings → Secrets and variables → Actions):
+#   DATABASE_URL  = postgresql://...@aws-0-ap-southeast-1.pooler.supabase.com:5432/postgres?sslmode=require
+#
+# Catatan:
+# - Secret TIDAK ditulis di file ini.
+# - Workflow ini juga menyalakan Supabase Free agar project tidak ter-pause
+#   (pause otomatis setelah 7 hari tanpa koneksi) — query SELECT 1 sudah cukup.
+# - Retensi artifact 14 hari. Untuk penyimpanan jangka panjang, salin artifact
+#   ke penyimpanan lain (lihat docs/architecture.md § 6.6).
+# =============================================================================
+
+name: Backup Database
+
+on:
+  schedule:
+    # 19:00 UTC = 02:00 WIB (UTC+7).
+    - cron: '0 19 * * *'
+  workflow_dispatch:
+    # Jalankan manual kapan saja, mis. sebelum migrasi berisiko.
+
+concurrency:
+  group: backup-database
+  cancel-in-progress: false
+
+jobs:
+  backup:
+    name: Dump & simpan artifact
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install PostgreSQL client
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq postgresql-client
+          pg_dump --version
+
+      - name: Cek koneksi database
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          set -euo pipefail
+          # Mencegah project Supabase Free ter-pause (idle 7 hari).
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c 'SELECT 1' > /dev/null
+          echo "Koneksi database OK."
+
+      - name: Dump database
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          set -euo pipefail
+          STAMP="$(date -u +%Y%m%d-%H%M%S)"
+          OUT="backup-zipzips-${STAMP}.sql"
+
+          # --clean --if-exists : DROP ... IF EXISTS, aman untuk restore
+          # --no-owner --no-privileges : hasil dump tidak terikat role khusus
+          # --format=plain : SQL teks, mudah dibaca & dipulihkan manual
+          pg_dump "$DATABASE_URL" \
+            --format=plain \
+            --clean --if-exists \
+            --no-owner --no-privileges \
+            --file "$OUT"
+
+          gzip -9 "$OUT"
+          echo "Dump selesai: ${OUT}.gz"
+          ls -lh "${OUT}.gz"
+
+          # Simpan nama file untuk langkah upload.
+          echo "FILE_NAME=${OUT}.gz" >> "$GITHUB_ENV"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: db-backup-${{ github.run_number }}
+          path: ${{ env.FILE_NAME }}
+          retention-days: 14
+          if-no-files-found: error
+          compression-level: 0
+
+      - name: Ringkasan
+        if: always()
+        run: |
+          echo "### Backup database selesai"
+          echo "- Waktu (UTC): $(date -u +'%Y-%m-%d %H:%M:%S')"
+          echo "- Run: #${{ github.run_number }}"
+          echo "- Retensi artifact: 14 hari"
