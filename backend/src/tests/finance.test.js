@@ -100,7 +100,7 @@ describe('Laporan keuangan', () => {
     expect(data.penerimaanKas).toBe(0) // belum ada pembayaran sama sekali
   })
 
-  it('MENGHILANGKAN pesanan yang dibatalkan dari omzet DAN penerimaan kas', async () => {
+  it('mengeluarkan pesanan void dari omzet, tetapi kas yang sudah masuk tetap tercatat', async () => {
     const order = await buatPesanan(app, headers, {
       serviceId: services.kiloan.id,
       qty: 10,
@@ -113,12 +113,16 @@ describe('Laporan keuangan', () => {
       payload: { metode: 'TUNAI', nominal: 70000 },
     })
 
-    await inject(app, {
+    const voidResponse = await inject(app, {
       method: 'POST',
       url: `/api/orders/${order.id}/void`,
       headers: ownerHeaders,
-      payload: { alasan: 'Pelanggan batal' },
+      payload: {
+        alasan: 'Pelanggan batal',
+        refund: { nominal: 70000, metodeBayar: 'TUNAI' },
+      },
     })
+    expect(voidResponse.statusCode).toBe(200)
 
     const response = await inject(app, {
       method: 'GET',
@@ -128,8 +132,11 @@ describe('Laporan keuangan', () => {
 
     const data = response.json().data
     expect(data.omzet).toBe(0)
-    expect(data.penerimaanKas).toBe(0)
+    expect(data.penerimaanKas).toBe(70000)
+    expect(data.pengeluaran).toBe(70000)
+    expect(data.labaKas).toBe(0)
     expect(data.jumlahPesanan).toBe(0)
+    expect(data.perKategoriPengeluaran.REFUND).toBe(70000)
   })
 
   it('menghitung piutang sebagai sisa tagihan seluruh pesanan aktif lintas tanggal', async () => {
@@ -246,6 +253,40 @@ describe('Laporan keuangan', () => {
     expect(response.json().data.pengeluaran).toBe(75000)
   })
 
+  it('ringkasan beranda menghitung kas masuk berdasarkan tanggal pembayaran', async () => {
+    const order = await buatPesanan(app, headers, {
+      serviceId: services.kiloan.id,
+      qty: 1,
+    })
+
+    await inject(app, {
+      method: 'POST',
+      url: `/api/orders/${order.id}/pembayaran`,
+      headers,
+      payload: { metode: 'TUNAI', nominal: 7000 },
+    })
+
+    // Pembayaran dilakukan kemarin: omzet hari ini tetap ada, tetapi kas
+    // masuk hari ini harus 0 dan sisa tagihan pesanan hari ini juga 0.
+    await prisma.payment.updateMany({
+      where: { orderId: order.id },
+      data: { createdAt: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000) },
+    })
+
+    const response = await inject(app, {
+      method: 'GET',
+      url: '/api/dashboard/summary',
+      headers,
+    })
+
+    const data = response.json().data
+    expect(data.omzetHariIni).toBe(7000)
+    expect(data.diterimaHariIni).toBe(0)
+    expect(data.belumDibayarHariIni).toBe(0)
+    expect(data.jumlahPesananHariIni).toBe(1)
+    expect(data.piutang).toBe(0)
+  })
+
   it('menyediakan ringkasan beranda untuk hari ini', async () => {
     const order = await buatPesanan(app, headers, {
       serviceId: services.kiloan.id,
@@ -273,5 +314,38 @@ describe('Laporan keuangan', () => {
     expect(data.jumlahPesananHariIni).toBe(1)
     expect(data.statusCount.DITERIMA).toBe(1)
     expect(data.piutang).toBe(14000)
+  })
+
+  it('total pesanan aktif tidak menghitung pesanan yang sudah diambil', async () => {
+    const order = await buatPesanan(app, headers, {
+      serviceId: services.kiloan.id,
+      qty: 1,
+    })
+
+    for (const statusOrder of ['PROSES', 'SELESAI']) {
+      await inject(app, {
+        method: 'PATCH',
+        url: `/api/orders/${order.id}/status`,
+        headers,
+        payload: { statusOrder },
+      })
+    }
+    await inject(app, {
+      method: 'POST',
+      url: `/api/orders/${order.id}/serahkan`,
+      headers,
+      payload: {},
+    })
+
+    const response = await inject(app, {
+      method: 'GET',
+      url: '/api/dashboard/summary',
+      headers,
+    })
+
+    const data = response.json().data
+    expect(data.statusCount.DIAMBIL).toBe(1)
+    expect(data.totalPesananAktif).toBe(0)
+    expect(data.pesananSedangDikerjakan).toBe(0)
   })
 })

@@ -8,9 +8,7 @@ import DashboardPage from '@/pages/DashboardPage'
 import PosPage from '@/pages/PosPage'
 import OrdersPage from '@/pages/OrdersPage'
 import OrderDetailPage from '@/pages/OrderDetailPage'
-import CustomersPage from '@/pages/CustomersPage'
 import FinancePage from '@/pages/FinancePage'
-import InventoryPage from '@/pages/InventoryPage'
 import UsersPage from '@/pages/UsersPage'
 import SettingsPage from '@/pages/SettingsPage'
 import NotFoundPage from '@/pages/NotFoundPage'
@@ -42,26 +40,10 @@ export function App() {
               <Route path="pesanan" element={<OrdersPage />} />
               <Route path="pesanan/:id" element={<OrderDetailPage />} />
               <Route
-                path="pelanggan"
-                element={
-                  <RequireRole roles={['OWNER', 'KASIR']}>
-                    <CustomersPage />
-                  </RequireRole>
-                }
-              />
-              <Route
                 path="keuangan"
                 element={
                   <RequireRole roles={['OWNER']}>
                     <FinancePage />
-                  </RequireRole>
-                }
-              />
-              <Route
-                path="stok"
-                element={
-                  <RequireRole roles={['OWNER']}>
-                    <InventoryPage />
                   </RequireRole>
                 }
               />

@@ -40,24 +40,82 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install PostgreSQL client
+      - name: Install PostgreSQL client terbaru
         run: |
+          set -euo pipefail
+          # pg_dump versi lama TIDAK bisa membuka server PostgreSQL yang lebih
+          # baru (mis. client 16 vs Supabase 17/18). Pasang client terbaru dari
+          # repositori resmi PGDG, bukan paket bawaan Ubuntu yang sering
+          # tertinggal satu versi.
           sudo apt-get update -qq
-          sudo apt-get install -y -qq postgresql-client
-          pg_dump --version
+          sudo apt-get install -y -qq --no-install-recommends curl ca-certificates
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL \
+            -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+            https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          CODENAME="$(. /etc/os-release && echo "$VERSION_CODENAME")"
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt ${CODENAME}-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list > /dev/null
+          sudo apt-get update -qq
 
-      - name: Cek koneksi database
+          PG_CLIENT_VERSION="$(apt-cache search --names-only '^postgresql-client-[0-9]+$' \
+            | awk '{print $1}' \
+            | sed 's/^postgresql-client-//' \
+            | sort -V \
+            | tail -n1)"
+          if [ -z "$PG_CLIENT_VERSION" ]; then
+            echo "::error::Tidak menemukan paket postgresql-client dari PGDG."
+            exit 1
+          fi
+          sudo apt-get install -y -qq --no-install-recommends "postgresql-client-${PG_CLIENT_VERSION}"
+
+          PG_DUMP="/usr/lib/postgresql/${PG_CLIENT_VERSION}/bin/pg_dump"
+          PSQL="/usr/lib/postgresql/${PG_CLIENT_VERSION}/bin/psql"
+          echo "PG_DUMP=$PG_DUMP" >> "$GITHUB_ENV"
+          echo "PSQL=$PSQL" >> "$GITHUB_ENV"
+          "$PG_DUMP" --version
+
+      - name: Normalisasi connection string untuk libpq
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: |
           set -euo pipefail
+          if [ -z "${DATABASE_URL:-}" ]; then
+            echo "::error::Secret DATABASE_URL belum diisi. Set di Settings → Secrets and variables → Actions."
+            exit 1
+          fi
+
+          # DATABASE_URL dipakai Prisma, jadi bisa berisi parameter khusus
+          # Prisma yang tidak dikenal psql/pg_dump (schema, connection_limit,
+          # pool_timeout, pgbouncer, ...). Buang parameter itu, pertahankan
+          # sslmode, dan ubah sslmode=no-verify (khusus Prisma) menjadi require.
+          PG_URL="$(node -e '
+            const u = new URL(process.env.DATABASE_URL)
+            for (const key of [
+              "schema",
+              "connection_limit",
+              "pool_timeout",
+              "pgbouncer",
+              "statement_cache_size",
+              "socket_timeout",
+            ]) {
+              u.searchParams.delete(key)
+            }
+            if (u.searchParams.get("sslmode") === "no-verify") {
+              u.searchParams.set("sslmode", "require")
+            }
+            process.stdout.write(u.toString())
+          ')"
+          echo "PG_URL=$PG_URL" >> "$GITHUB_ENV"
+
+      - name: Cek koneksi database
+        run: |
+          set -euo pipefail
           # Mencegah project Supabase Free ter-pause (idle 7 hari).
-          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c 'SELECT 1' > /dev/null
+          "$PSQL" "$PG_URL" -v ON_ERROR_STOP=1 -c 'SELECT 1' > /dev/null
           echo "Koneksi database OK."
 
       - name: Dump database
-        env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: |
           set -euo pipefail
           STAMP="$(date -u +%Y%m%d-%H%M%S)"
@@ -66,7 +124,7 @@ jobs:
           # --clean --if-exists : DROP ... IF EXISTS, aman untuk restore
           # --no-owner --no-privileges : hasil dump tidak terikat role khusus
           # --format=plain : SQL teks, mudah dibaca & dipulihkan manual
-          pg_dump "$DATABASE_URL" \
+          "$PG_DUMP" "$PG_URL" \
             --format=plain \
             --clean --if-exists \
             --no-owner --no-privileges \

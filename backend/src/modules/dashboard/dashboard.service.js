@@ -1,5 +1,5 @@
 import { prisma } from '../../lib/prisma.js'
-import { wibDayRange, wibDate, todayWib } from '../../lib/wib.js'
+import { wibDayRange, wibDate, wibRange, todayWib } from '../../lib/wib.js'
 
 /**
  * Ringkasan untuk layar beranda.
@@ -15,6 +15,10 @@ import { wibDayRange, wibDate, todayWib } from '../../lib/wib.js'
 export async function summary(role) {
   const hariIni = todayWib()
   const range = wibDayRange(hariIni)
+  // Tujuh hari KALENDER penuh, bukan 6×24 jam bergulir yang memotong
+  // sebagian hari paling awal pada grafik.
+  const tujuhHariMulai = wibDate(new Date(Date.now() - 6 * 24 * 60 * 60 * 1000))
+  const rangeTujuhHari = wibRange(tujuhHariMulai, hariIni)
 
   // Operator tidak boleh melihat agregat uang, jadi query yang menyentuh
   // nominal tidak dijalankan sama sekali untuk peran ini.
@@ -22,17 +26,36 @@ export async function summary(role) {
 
   const [
     orderHariIni,
+    penerimaanHariIni,
+    pemasukanLainHariIni,
     totalPesananAktif,
     statusGroups,
     tujuhHari,
     piutangAgg,
     pesananSedangDikerjakan,
+    belumDihubungi,
+    piutangJatuhTempoOrders,
   ] = await Promise.all([
     prisma.order.findMany({
       where: { voidedAt: null, tanggalMasuk: range },
-      select: { total: true, totalDibayar: true },
+      select: bolehLihatUang
+        ? { total: true, totalDibayar: true }
+        : { id: true },
     }),
-    prisma.order.count({ where: { voidedAt: null } }),
+    bolehLihatUang
+      ? prisma.payment.findMany({
+          where: { createdAt: range },
+          select: { nominal: true, kembalian: true },
+        })
+      : Promise.resolve([]),
+    bolehLihatUang
+      ? prisma.otherIncome.findMany({
+          where: { tanggal: range },
+          select: { nominal: true },
+        })
+      : Promise.resolve([]),
+    // "Aktif" berarti masih berada di outlet, belum diambil pelanggan.
+    prisma.order.count({ where: { voidedAt: null, statusOrder: { not: 'DIAMBIL' } } }),
     prisma.order.groupBy({
       by: ['statusOrder'],
       where: { voidedAt: null },
@@ -42,7 +65,7 @@ export async function summary(role) {
       ? prisma.order.findMany({
           where: {
             voidedAt: null,
-            tanggalMasuk: { gte: new Date(Date.now() - 6 * 24 * 60 * 60 * 1000) },
+            tanggalMasuk: rangeTujuhHari,
           },
           select: { total: true, tanggalMasuk: true },
         })
@@ -54,6 +77,18 @@ export async function summary(role) {
         })
       : Promise.resolve(null),
     prisma.order.count({ where: { voidedAt: null, statusOrder: { in: ['DITERIMA', 'PROSES'] } } }),
+    prisma.order.count({
+      where: { voidedAt: null, statusOrder: 'SELESAI', dihubungiAt: null },
+    }),
+    bolehLihatUang
+      ? prisma.order.findMany({
+          where: {
+            voidedAt: null,
+            jatuhTempo: { not: null, lte: new Date() },
+          },
+          select: { total: true, totalDibayar: true },
+        })
+      : Promise.resolve([]),
   ])
 
   const statusCount = { DITERIMA: 0, PROSES: 0, SELESAI: 0, DIAMBIL: 0 }
@@ -61,11 +96,22 @@ export async function summary(role) {
     statusCount[group.statusOrder] = group._count._all
   }
 
+  const jatuhTempoAktif = piutangJatuhTempoOrders.filter(
+    (order) => order.totalDibayar < order.total,
+  )
+  const piutangJatuhTempoNominal = jatuhTempoAktif.reduce(
+    (sum, order) => sum + (order.total - order.totalDibayar),
+    0,
+  )
+
   const dasar = {
     hariIni,
     jumlahPesananHariIni: orderHariIni.length,
     totalPesananAktif,
     pesananSedangDikerjakan,
+    // Cucian selesai yang pelanggannya belum diberi kabar — tugas admin.
+    belumDihubungi,
+    piutangJatuhTempo: jatuhTempoAktif.length,
     statusCount,
   }
 
@@ -74,7 +120,16 @@ export async function summary(role) {
   }
 
   const omzetHariIni = orderHariIni.reduce((sum, o) => sum + o.total, 0)
-  const diterimaHariIni = orderHariIni.reduce((sum, o) => sum + o.totalDibayar, 0)
+  // Kas masuk mengikuti TANGGAL PEMBAYARAN, bukan tanggal pesanan. Ini juga
+  // membuat dashboard tetap jujur setelah pesanan void: uang yang pernah masuk
+  // tidak hilang, refund muncul sebagai pengeluaran.
+  const diterimaHariIni =
+    penerimaanHariIni.reduce((sum, p) => sum + (p.nominal - p.kembalian), 0) +
+    pemasukanLainHariIni.reduce((sum, o) => sum + o.nominal, 0)
+  const belumDibayarHariIni = orderHariIni.reduce(
+    (sum, o) => sum + Math.max(0, o.total - o.totalDibayar),
+    0,
+  )
 
   // Omzet 7 hari terakhir (pivot per tanggal WIB).
   const harianMap = new Map()
@@ -100,8 +155,9 @@ export async function summary(role) {
     ...dasar,
     omzetHariIni,
     diterimaHariIni,
-    belumDibayarHariIni: omzetHariIni - diterimaHariIni,
+    belumDibayarHariIni,
     piutang,
+    piutangJatuhTempoNominal,
     omzetTujuhHari: [...harianMap.values()],
   }
 }

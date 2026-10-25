@@ -1,10 +1,10 @@
-import { randomUUID } from 'node:crypto'
 import { prisma } from '../../lib/prisma.js'
 import { HttpError } from '../../lib/errors.js'
 import { writeAudit } from '../../lib/audit.js'
 import { serializableTransaction } from '../../lib/transaction.js'
 import { wibRange } from '../../lib/wib.js'
-import { sisaTagihan, statusPembayaran } from '../orders/orders.service.js'
+import { getById } from '../orders/orders.service.js'
+import { catatPembayaran } from './payments.core.js'
 
 /**
  * Mencatat pembayaran pada sebuah pesanan.
@@ -12,66 +12,19 @@ import { sisaTagihan, statusPembayaran } from '../orders/orders.service.js'
  * Aturan penting:
  *  1. `kembalian` SELALU dihitung server (hanya boleh untuk TUNAI).
  *  2. Transaksi memakai isolation SERIALIZABLE → dua kasir yang menekan
- *     tombol bersamaan tidak bisa causing over-payment.
+ *     tombol bersamaan tidak bisa menyebabkan over-payment.
  *  3. `idempotencyKey` UNIQUE → klik ganda / retry jaringan aman.
  *  4. Transaksi tidak pernah dihapus. Koreksi dilakukan lewat void/refund.
+ *
+ * Logika inti ada di `payments.core.js` agar dipakai bersama alur serah terima
+ * (`serahkan`) tanpa duplikasi aturan.
  */
 export async function createPayment(orderId, input, actor) {
   const hasil = await serializableTransaction(prisma, async (tx) => {
     const order = await tx.order.findUnique({ where: { id: orderId } })
     if (!order) throw HttpError.notFound('Pesanan tidak ditemukan.')
-    if (order.voidedAt) {
-      throw HttpError.conflict(
-        'PESANAN_VOID',
-        'Pesanan yang sudah dibatalkan tidak bisa menerima pembayaran.',
-      )
-    }
 
-    const idempotencyKey = input.idempotencyKey || `auto:${randomUUID()}`
-
-    // Sudah pernah dicatat (retry) → kembalikan hasil yang sama.
-    const existing = await tx.payment.findUnique({
-      where: { idempotencyKey },
-      include: { order: true },
-    })
-    if (existing) {
-      return { payment: existing, order: existing.order, dibuatBaru: false }
-    }
-
-    const sisa = order.total - order.totalDibayar
-    if (sisa <= 0) {
-      throw HttpError.conflict('SUDAH_LUNAS', 'Pesanan ini sudah lunas.')
-    }
-
-    if (input.nominal > sisa && input.metode !== 'TUNAI') {
-      throw HttpError.unprocessable(
-        'NOMINAL_TERLALU_BESAR',
-        `Nominal ${input.nominal} melebihi sisa tagihan ${sisa}. Kembalian hanya untuk pembayaran TUNAI.`,
-      )
-    }
-
-    const kembalian = input.metode === 'TUNAI' ? Math.max(0, input.nominal - sisa) : 0
-    const diterima = input.nominal - kembalian
-
-    const payment = await tx.payment.create({
-      data: {
-        orderId,
-        metode: input.metode,
-        nominal: input.nominal,
-        kembalian,
-        referensi: input.referensi || null,
-        catatan: input.catatan || null,
-        idempotencyKey,
-        createdById: actor.id,
-      },
-    })
-
-    const orderBaru = await tx.order.update({
-      where: { id: orderId },
-      data: { totalDibayar: { increment: diterima } },
-    })
-
-    return { payment, order: orderBaru, dibuatBaru: true }
+    return catatPembayaran(tx, order, input, actor)
   })
 
   if (hasil.dibuatBaru) {
@@ -89,11 +42,9 @@ export async function createPayment(orderId, input, actor) {
 
   return {
     payment: hasil.payment,
-    order: {
-      ...hasil.order,
-      sisaTagihan: sisaTagihan(hasil.order),
-      statusPembayaran: statusPembayaran(hasil.order),
-    },
+    // Kembalikan pesanan lengkap (item, riwayat, pembayaran) agar layar POS
+    // dan detail pesanan tidak kehilangan data setelah mencatat pembayaran.
+    order: await getById(orderId, actor.role),
     dibuatBaru: hasil.dibuatBaru,
   }
 }
@@ -110,14 +61,16 @@ export async function list(query) {
     where.createdAt = wibRange(dari, sampai)
   }
 
-  // Pembayaran dari pesanan yang dibatalkan tidak dihitung sebagai penerimaan.
-  where.order = { voidedAt: null }
+  // Pembayaran pada pesanan void tetap ditampilkan: uangnya benar-benar
+  // pernah masuk dan refund dicatat terpisah sebagai pengeluaran REFUND.
 
   const [items, total, agregat] = await Promise.all([
     prisma.payment.findMany({
       where,
       include: {
-        order: { select: { id: true, nomor: true, namaPelanggan: true } },
+        order: {
+          select: { id: true, nomor: true, namaPelanggan: true, voidedAt: true },
+        },
         createdBy: { select: { id: true, nama: true, username: true } },
       },
       orderBy: { createdAt: 'desc' },

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
-import { Search } from 'lucide-react'
+import { Link, useSearchParams } from 'react-router-dom'
+import { CalendarClock, MessageCircle, Search } from 'lucide-react'
 import { requestWithMeta } from '@/lib/api'
 import { formatRupiah, formatTanggal } from '@/lib/format'
 import { Card, CardBody } from '@/components/ui/Card'
@@ -22,13 +22,29 @@ const STATUS_OPTIONS: Array<{ value: '' | StatusOrder; label: string }> = [
 
 export function OrdersPage() {
   const { user } = useAuth()
+  const isOperator = user?.role === 'OPERATOR'
+  const [searchParams] = useSearchParams()
   const [orders, setOrders] = useState<Order[]>([])
   const [meta, setMeta] = useState<{ page: number; totalPages: number; total: number } | null>(
     null,
   )
   const [loading, setLoading] = useState(true)
-  const [search, setSearch] = useState('')
-  const [status, setStatus] = useState<'' | StatusOrder>('')
+  const [search, setSearch] = useState(() => searchParams.get('search') ?? '')
+  const [status, setStatus] = useState<'' | StatusOrder>(() => {
+    const value = searchParams.get('status')
+    return value === 'DITERIMA' ||
+      value === 'PROSES' ||
+      value === 'SELESAI' ||
+      value === 'DIAMBIL'
+      ? value
+      : ''
+  })
+  const [belumDihubungi, setBelumDihubungi] = useState(
+    () => searchParams.get('belumDihubungi') === 'true',
+  )
+  const [jatuhTempo, setJatuhTempo] = useState(
+    () => searchParams.get('jatuhTempo') === 'true',
+  )
   const [page, setPage] = useState(1)
 
   const muat = useCallback(async () => {
@@ -36,7 +52,9 @@ export function OrdersPage() {
     try {
       const params = new URLSearchParams()
       if (search.trim()) params.set('search', search.trim())
-      if (status) params.set('status', status)
+      if (jatuhTempo) params.set('jatuhTempo', 'true')
+      else if (belumDihubungi) params.set('belumDihubungi', 'true')
+      else if (status) params.set('status', status)
       params.set('page', String(page))
       params.set('limit', '20')
 
@@ -50,7 +68,7 @@ export function OrdersPage() {
     } finally {
       setLoading(false)
     }
-  }, [search, status, page])
+  }, [search, status, belumDihubungi, jatuhTempo, page])
 
   useEffect(() => {
     void muat()
@@ -84,9 +102,10 @@ export function OrdersPage() {
               />
             </div>
             <Select
-              value={status}
+              value={belumDihubungi || jatuhTempo ? '' : status}
               onChange={(event) => gantiStatus(event.target.value as '' | StatusOrder)}
               className="sm:w-48"
+              disabled={belumDihubungi || jatuhTempo}
             >
               {STATUS_OPTIONS.map((option) => (
                 <option key={option.value} value={option.value}>
@@ -94,7 +113,50 @@ export function OrdersPage() {
                 </option>
               ))}
             </Select>
+            <Button
+              variant={belumDihubungi ? 'primary' : 'outline'}
+              onClick={() => {
+                setBelumDihubungi((value) => !value)
+                setJatuhTempo(false)
+                setPage(1)
+              }}
+              className="shrink-0"
+            >
+              <MessageCircle className="size-4" />
+              Belum dihubungi
+            </Button>
+            {!isOperator && (
+              <Button
+                variant={jatuhTempo ? 'primary' : 'outline'}
+                onClick={() => {
+                  setJatuhTempo((value) => !value)
+                  setBelumDihubungi(false)
+                  setPage(1)
+                }}
+                className="shrink-0"
+              >
+                <CalendarClock className="size-4" />
+                Jatuh tempo
+              </Button>
+            )}
           </div>
+
+          {belumDihubungi && (
+            <p className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800">
+              Menampilkan cucian <strong>SELESAI</strong> yang pelanggannya belum
+              dikabari.{' '}
+              {isOperator
+                ? 'Admin/kasir yang menghubungi pelanggan.'
+                : 'Buka pesanan untuk mengirim WhatsApp atau menandai sudah dihubungi.'}
+            </p>
+          )}
+
+          {jatuhTempo && (
+            <p className="rounded-lg bg-red-50 px-3 py-2 text-xs text-red-800">
+              Menampilkan piutang yang sudah melewati tanggal janji bayar dan
+              belum lunas. Hubungi pelanggan untuk penagihan.
+            </p>
+          )}
 
           {loading ? (
             <div className="flex justify-center py-12">
@@ -144,9 +206,14 @@ export function OrdersPage() {
                         {formatTanggal(order.tanggalMasuk)}
                       </td>
                       <td className="px-4 py-3">
-                        <Badge tone={STATUS_ORDER_TONE[order.statusOrder]}>
-                          {LABEL_STATUS_ORDER[order.statusOrder]}
-                        </Badge>
+                        <div className="flex flex-col items-start gap-1">
+                          <Badge tone={STATUS_ORDER_TONE[order.statusOrder]}>
+                            {LABEL_STATUS_ORDER[order.statusOrder]}
+                          </Badge>
+                          {order.statusOrder === 'SELESAI' && !order.dihubungiAt && (
+                            <Badge tone="amber">Belum dihubungi</Badge>
+                          )}
+                        </div>
                       </td>
                       <td className="px-4 py-3">
                         {user?.role === 'OPERATOR' ? (

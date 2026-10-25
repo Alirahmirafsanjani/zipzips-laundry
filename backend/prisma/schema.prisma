@@ -68,6 +68,7 @@ enum KategoriPengeluaran {
   SEWA
   TRANSPORTASI
   PERAWATAN // Servis mesin
+  REFUND // Uang dikembalikan ke pelanggan (mis. pesanan void)
   LAIN_LAIN
 }
 
@@ -99,6 +100,14 @@ enum SumberOrder {
   OFFLINE
 }
 
+/// Cara admin menghubungi pelanggan saat cucian selesai.
+/// Dicatat manual — tidak ada integrasi WhatsApp API.
+enum MetodeHubungi {
+  WHATSAPP
+  TELEPON
+  LANGSUNG
+}
+
 // -----------------------------------------------------------------------------
 // MODEL
 // -----------------------------------------------------------------------------
@@ -114,14 +123,15 @@ model User {
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
-  ordersCreated Order[]              @relation("OrderDibuat")
-  ordersVoided  Order[]              @relation("OrderDibatalkan")
-  payments      Payment[]
-  expenses      Expense[]
-  otherIncomes  OtherIncome[]
-  movements     StockMovement[]
-  statusChanges OrderStatusHistory[]
-  auditLogs     AuditLog[]
+  ordersCreated   Order[]              @relation("OrderDibuat")
+  ordersVoided    Order[]              @relation("OrderDibatalkan")
+  payments        Payment[]
+  expenses        Expense[]
+  otherIncomes    OtherIncome[]
+  movements       StockMovement[]
+  statusChanges   OrderStatusHistory[]
+  ordersContacted Order[]              @relation("OrderDihubungi")
+  auditLogs       AuditLog[]
 
   @@map("users")
 }
@@ -190,9 +200,19 @@ model Order {
   estimasiSelesai DateTime?
   tanggalSelesai  DateTime?
   tanggalDiambil  DateTime?
+  /// Janji bayar untuk sisa tagihan (piutang) saat cucian diambil.
+  jatuhTempo      DateTime?
 
   catatan           String?
   catatanPengerjaan String?
+
+  /// Bukti admin sudah menghubungi pelanggan saat cucian SELESAI.
+  /// `jumlahDihubungi` dihitung agar terlihat bila perlu dihubungi ulang.
+  dihubungiAt     DateTime?
+  dihubungiVia    MetodeHubungi?
+  dihubungiOlehId String?
+  dihubungiOleh   User?          @relation("OrderDihubungi", fields: [dihubungiOlehId], references: [id])
+  jumlahDihubungi Int            @default(0)
 
   createdById String
   createdBy   User      @relation("OrderDibuat", fields: [createdById], references: [id])
@@ -212,6 +232,7 @@ model Order {
   @@index([statusOrder])
   @@index([customerId])
   @@index([namaPelanggan])
+  @@index([jatuhTempo])
   @@map("orders")
 }
 
@@ -225,7 +246,8 @@ model OrderItem {
   /// Snapshot — harga master boleh berubah tanpa mengubah nota lama.
   namaService String
   satuan      SatuanLayanan
-  qty         Int
+  /// Berat/jumlah item. Desimal agar kiloan bisa 2,5 kg (bukan dibulatkan).
+  qty         Decimal       @db.Decimal(10, 2)
   hargaSatuan Int
   subtotal    Int
   catatan     String?

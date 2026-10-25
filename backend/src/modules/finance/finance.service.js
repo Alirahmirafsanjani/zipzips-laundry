@@ -11,12 +11,14 @@ import { wibRange, wibDate, todayWib } from '../../lib/wib.js'
  * 1. OMZET
  *    = SUM(Order.total) untuk pesanan yang BELUM dibatalkan, dihitung
  *      berdasarkan tanggal pesanan masuk (tanggalMasuk).
- *    Melqvfaq omzet = nilai pekerjaan yang DITERIMA, bukan uang yang sudah masuk.
+ *    Maksud omzet = nilai pekerjaan yang DITERIMA, bukan uang yang sudah masuk.
  *
  * 2. PENERIMAAN KAS
  *    = SUM(Payment.nominal - Payment.kembalian) + SUM(OtherIncome.nominal)
  *      dihitung berdasarkan TANGGAL PENERIMAAN (bukan tanggal pesanan).
- *    Pembayaran dari pesanan yang dibatalkan (void) TIDAK dihitung.
+ *    Pembayaran pada pesanan void TETAP dihitung: uangnya benar-benar pernah
+ *    masuk. Bila dikembalikan, OWNER mencatat pengeluaran kategori REFUND.
+ *    Dengan begitu void tidak menghapus jejak kas secara retroaktif.
  *
  * 3. PENGELUARAN
  *    = SUM(Expense.nominal) berdasarkan tanggal pengeluaran.
@@ -53,8 +55,11 @@ export async function ringkasan({ dari, sampai }) {
     }),
 
     // Penerimaan kas dari laundry — berdasarkan tanggal pembayaran.
+    // Sengaja TIDAK memfilter order.voidedAt: void adalah pembatalan
+    // pekerjaan, bukan penghapusan uang yang sudah diterima. Refund dicatat
+    // sebagai Expense REFUND pada tanggal uang dikembalikan.
     prisma.payment.findMany({
-      where: { order: { voidedAt: null }, createdAt: range },
+      where: { createdAt: range },
       select: { nominal: true, kembalian: true, metode: true, createdAt: true },
     }),
 
@@ -158,6 +163,8 @@ export async function ringkasan({ dari, sampai }) {
         'Laba kas = penerimaan kas - pengeluaran. BUKAN laba bersih: HPP bahan baku & biaya lainnya belum dihitung.',
       piutang: 'Piutang = seluruh sisa tagihan pesanan aktif, lintas tanggal.',
       omzet: 'Omzet dihitung berdasarkan tanggal pesanan masuk, bukan tanggal pembayaran.',
+      penerimaanKas:
+        'Pembayaran pada pesanan void tetap dihitung sebagai kas masuk. Refund dicatat sebagai pengeluaran kategori REFUND.',
     },
   }
 }

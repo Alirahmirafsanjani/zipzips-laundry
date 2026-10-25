@@ -9,6 +9,8 @@ import {
   updateStatusSchema,
   updateNotesSchema,
   voidOrderSchema,
+  hubungiSchema,
+  serahkanSchema,
   idParamSchema,
 } from './orders.schema.js'
 import { createPaymentSchema } from '../payments/payments.schema.js'
@@ -68,9 +70,50 @@ router.patch(
   }),
 )
 
+/** Catat bahwa pelanggan sudah dihubungi (WA/telepon) setelah cucian selesai. */
+router.post(
+  '/:id/hubungi',
+  requireOwnerOrKasir,
+  validate({ params: idParamSchema, body: hubungiSchema }),
+  asyncHandler(async (req, res) => {
+    const order = await ordersService.hubungi(
+      req.valid.params.id,
+      { via: req.body.via, catatan: req.body.catatan },
+      req.user,
+    )
+    return ok(res, order)
+  }),
+)
+
+/**
+ * Serah terima cucian: status → DIAMBIL dan (opsional) catat pembayaran
+ * dalam satu transaksi. Inilah langkah "pelanggan menjemput dan membayar".
+ */
+router.post(
+  '/:id/serahkan',
+  requireOwnerOrKasir,
+  validate({ params: idParamSchema, body: serahkanSchema }),
+  asyncHandler(async (req, res) => {
+    const result = await ordersService.serahkan(
+      req.valid.params.id,
+      {
+        pembayaran: req.body.pembayaran,
+        jatuhTempo: req.body.jatuhTempo,
+        catatan: req.body.catatan,
+      },
+      req.user,
+    )
+    return ok(res, result)
+  }),
+)
+
+/**
+ * Catatan pesanan. OPERATOR boleh mengisi `catatanPengerjaan`; field
+ * `catatan` pelanggan tetap dibatasi di service untuk OWNER/KASIR.
+ */
 router.patch(
   '/:id/catatan',
-  requireOwnerOrKasir,
+  requireAnyRole,
   validate({ params: idParamSchema, body: updateNotesSchema }),
   asyncHandler(async (req, res) => {
     const order = await ordersService.updateNotes(req.valid.params.id, req.body, req.user)
@@ -84,11 +127,7 @@ router.post(
   requireOwner,
   validate({ params: idParamSchema, body: voidOrderSchema }),
   asyncHandler(async (req, res) => {
-    const order = await ordersService.voidOrder(
-      req.valid.params.id,
-      req.body.alasan,
-      req.user,
-    )
+    const order = await ordersService.voidOrder(req.valid.params.id, req.body, req.user)
     return ok(res, order)
   }),
 )

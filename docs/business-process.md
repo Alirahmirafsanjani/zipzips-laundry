@@ -100,11 +100,19 @@ Diagram memakai notasi sederhana:
 | # | Langkah | Detail |
 |---|---|---|
 | C1 | Karangian melihat daftar | Filter default: status bukan `DIAMBIL`, diurutkan lama dulu (FIFO). |
-| C2 | Karangian membuka detail | Melihat item, nama pelanggan, catatan. |
+| C2 | Karangian membuka detail | Melihat item, nama pelanggan, catatan, dan mengisi catatan pengerjaan bila perlu. |
 | C3 | Karangian menandai `PROSES` | Dicuci / dijemur. |
 | C4 | Karangian menandai `SELESAI` | Siap diambil. `tanggalSelesai` terisi. |
-| C5 | Pelanggan mengambil | Status → `DIAMBIL`, `tanggalDiambil` terisi. |
-| C6 | Setiap langkah | `OrderStatusHistory` mencatat: status asal, status baru, pelaku, waktu, catatan. |
+| C5 | **Admin menghubungi pelanggan** | Admin/kasir mengirim WhatsApp (pesan otomatis berisi nomor nota, total, dan sisa tagihan) atau menelepon. Sistem mencatat `dihubungiAt`, `dihubungiVia`, pelaku, dan `jumlahDihubungi`. Beranda memperbarui daftar "siap diambil" tiap 30 detik dan menyediakan tombol muat ulang. |
+| C6 | Pelanggan mengambil & membayar | Satu aksi "Serahkan &amp; Bayar": sistem mencatat pembayaran (opsional) **dan** mengubah status → `DIAMBIL` dalam satu transaksi. Bila belum dibayar, sisa tetap tercatat sebagai piutang dan tanggal janji bayar (`jatuhTempo`) disimpan. |
+| C7 | Setiap langkah | `OrderStatusHistory` mencatat: status asal, status baru, pelaku, waktu, catatan. |
+| C7.1 | Nota pelanggan | Nota 80 mm dapat dicetak dari POS setelah pesanan dibuat atau dari detail pesanan. Berisi item, berat, estimasi selesai, total, DP, sisa, dan catatan struk. |
+| C7.2 | Catatan pengerjaan | Karangian dapat menyimpan catatan kondisi cucian lewat `PATCH /api/orders/:id/catatan` (`catatanPengerjaan`). Catatan pelanggan tetap diedit OWNER/KASIR. |
+
+**Tugas admin (daftar kerja):** beranda menampilkan jumlah cucian `SELESAI`
+yang **belum dihubungi**. Daftar pesanan punya filter "Belum dihubungi"
+(`GET /api/orders?belumDihubungi=true`) sehingga tidak ada cucian selesai yang
+terlupakan.
 
 **Aturan transisi:**
 
@@ -115,10 +123,27 @@ DITERIMA ──→ PROSES ──→ SELESAI ──→ DIAMBIL
 ```
 
 Transisi lain (mis. `DITERIMA → DIAMBIL`) **ditolak** dengan 422 `TRANSISI_INVALID`.
+Perubahan ke `DIAMBIL` tidak memakai endpoint status biasa; langkah itu wajib
+melalui `POST /api/orders/:id/serahkan` agar pembayaran/piutang ikut tercatat.
 Status tidak boleh mundur (mis. `SELESAI → PROSES`) kecuali OWNER yang
 mengoreksi secara sengaja (open question Q-04).
 
-**Pemetaan ke requirement:** F-30 … F-33.
+**Pemetaan ke requirement:** F-30 … F-36.
+
+### C8. Serah terima (pelanggan menjemput)
+
+| # | Langkah | Detail |
+|---|---|---|
+| C8.1 | Admin membuka pesanan `SELESAI` | Tombol utama: **Serahkan & Bayar**. |
+| C8.2 | Sistem menampilkan sisa tagihan | Total, sudah dibayar, sisa. |
+| C8.3 | Pelanggan membayar (opsional) | Metode TUNAI/QRIS/TRANSFER. Kembalian dihitung server. |
+| C8.4 | Admin menekan "Serahkan" | `POST /api/orders/:id/serahkan` mencatat pembayaran **dan** status `DIAMBIL` dalam satu transaksi SERIALIZABLE. |
+| C8.5 | Bila belum dibayar | Boleh — sisa menjadi piutang. Sistem menampilkan peringatan sebelum menyerahkan dan meminta tanggal janji bayar (`jatuhTempo`). |
+| C8.6 | Penagihan | Piutang yang melewati `jatuhTempo` muncul di beranda dan filter "Jatuh tempo" (`GET /api/orders?jatuhTempo=true`); hanya piutang yang benar-benar belum lunas. |
+| C8.7 | Retry aman | `idempotencyKey` yang sama tidak menambah pembayaran/riwayat. |
+
+Serah terima hanya boleh dari status `SELESAI`; status lain ditolak
+`BELUM_SELESAI`. Serah terima kedua ditolak `SUDAH_DIAMBIL`.
 
 ---
 
@@ -210,16 +235,18 @@ Diturunkan, tidak disimpan:
 | E1 | OWNER membuka pesanan | — |
 | E2 | OWNER memilih "Batalkan pesanan" | — |
 | E3 | OWNER mengisi alasan | Wajib, min. 3 karakter. |
-| E4 | Sistem memvalidasi | Pesanan belum void, minimal 3 karakter. |
-| E5 | Sistem menandai void | `voidedAt`, `voidAlasan`, `voidedById` terisi. **Data tidak dihapus.** |
-| E6 | Dampak laporan | Pesanan dikeluarkan dari omzet, penerimaan kas, jumlah pesanan, dan piutang. |
-| E7 | Jejak audit | `AuditLog` mencatat aksi `VOID_ORDER` beserta alasan. |
+| E4 | Sistem memvalidasi | Pesanan belum void, alasan minimal 3 karakter. |
+| E5 | Bila sudah ada pembayaran | OWNER **wajib** menentukan nominal refund (0 bila uang tidak dikembalikan) dan metode refund. Refund tidak boleh melebihi `totalDibayar`. |
+| E6 | Sistem menandai void | `voidedAt`, `voidAlasan`, `voidedById` terisi. **Data tidak dihapus.** Bila refund > 0, `Expense` kategori `REFUND` dibuat dalam transaksi yang sama. |
+| E7 | Dampak laporan | Pesanan dikeluarkan dari omzet, jumlah pesanan, dan piutang. Pembayaran yang pernah masuk **tetap** dihitung sebagai penerimaan kas; refund mengurangi laba kas sebagai pengeluaran. |
+| E8 | Jejak audit | `AuditLog` mencatat aksi `VOID_PESANAN` beserta alasan dan keputusan refund. |
 
-Pembayaran yang sudah tercatat pada pesanan void **tetap ada** di riwayat
-`Payment` (tidak dihapus), tetapi **tidak dihitung** dalam laporan karena
-laporan memfilter `order.voidedAt = null`.
+Dengan aturan ini, pembatalan tidak bisa dipakai untuk “menghilangkan” uang
+yang sudah diterima. Contoh: pesanan Rp70.000 dibayar tunai lalu dibatalkan
+dengan refund penuh → penerimaan kas Rp70.000, pengeluaran Rp70.000, laba kas
+Rp0, omzet Rp0, piutang Rp0.
 
-**Pemetaan ke requirement:** F-60 … F-64.
+**Pemetaan ke requirement:** F-60 … F-65.
 
 ---
 
@@ -230,7 +257,7 @@ laporan memfilter `order.voidedAt = null`.
 ### F1. Pengeluaran
 
 1. OWNER membuka menu Pengeluaran → "Catat Pengeluaran".
-2. Memilih kategori (BAHAN_BAKU, GAJI, LISTRIK_GAS, SEWA, TRANSPORTASI, PERAWATAN, LAIN_LAIN).
+2. Memilih kategori (BAHAN_BAKU, GAJI, LISTRIK_GAS, SEWA, TRANSPORTASI, PERAWATAN, REFUND, LAIN_LAIN).
 3. Mengisi keterangan, nominal, metode bayar, dan tanggal.
 4. Sistem menyimpan + mencatat audit.
 5. Pengeluaran langsung mengurangi **laba kas** pada hari tersebut.
@@ -353,7 +380,7 @@ server (mis. QRIS melebihi sisa) — UI menjelaskan alasannya.
 | D — Catat pembayaran | ✅ | ✅ | ❌ |
 | E — Void pesanan | ✅ | ❌ | ❌ |
 | F — Pengeluaran / pemasukan lain | ✅ | ❌ | ❌ |
-| G — Mutasi stok | ✅ | ❌ | ❌ |
+| G — Mutasi stok (API) | ✅ | ❌ | ❌ |
 | H — Laporan keuangan | ✅ | ❌ | ❌ (UI sembunyikan angka) |
 | I — Antrean offline | ✅ | ✅ | ❌ |
 | Kelola pengguna & layanan | ✅ | ❌ | ❌ |

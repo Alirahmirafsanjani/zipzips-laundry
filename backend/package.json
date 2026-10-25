@@ -5,6 +5,9 @@
   "description": "REST API Sistem Informasi ZIP-ZIPS LAUNDRI (Express 5 + Prisma 6 + PostgreSQL)",
   "type": "module",
   "main": "src/server.js",
+  "engines": {
+    "node": ">=22.12.0 <25"
+  },
   "scripts": {
     "dev": "nodemon src/server.js",
     "start": "node src/server.js",

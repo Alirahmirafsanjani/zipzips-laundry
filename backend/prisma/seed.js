@@ -9,6 +9,13 @@
  *    diisi, nilai itu yang dipakai.
  *  - Bila tidak diisi, password DIBUAT RANDOM dan dicetak ke terminal.
  *    Tidak ada password default yang dipaketkan di dalam source code.
+ *  - Di produksi (NODE_ENV=production), password acak DITOLAK karena hanya
+ *    muncul di log dan mudah hilang. Isi env password sebelum deploy pertama.
+ *
+ * Idempoten:
+ *  - User yang sudah ada TIDAK diubah passwordnya dan tidak dicetak ulang.
+ *  - noHp hanya ditimpa bila env SEED_*_NOHP diisi.
+ *  - Reset password hanya bila SEED_*_PASSWORD_RESET=true.
  */
 import { randomBytes } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
@@ -23,12 +30,13 @@ dotenv.config({ path: fileURLToPath(new URL('../.env', import.meta.url)) })
 const prisma = new PrismaClient()
 
 const SALT_ROUNDS = 10
+const IS_PRODUCTION = process.env.NODE_ENV === 'production'
 
 function randomPassword() {
   return `zz-${randomBytes(6).toString('base64url')}`
 }
 
-function pickPassword(envKey, fallback) {
+function pickPassword(envKey) {
   const fromEnv = process.env[envKey]
   if (fromEnv && fromEnv.trim()) {
     return { password: fromEnv.trim(), dibuatAcak: false }
@@ -128,34 +136,69 @@ async function main() {
   console.log('[seed] mulai...')
 
   // --- Users -----------------------------------------------------------------
+  // Rencanakan dulu semua user SEBELUM menulis apa pun. Dengan begitu,
+  // konfigurasi produksi yang kurang lengkap tidak menghasilkan seed separuh.
+  const existingUsers = await Promise.all(
+    USERS.map((spec) => prisma.user.findUnique({ where: { username: spec.username } })),
+  )
+
+  const rencanaUser = USERS.map((spec, index) => {
+    const existing = existingUsers[index]
+    const reset = process.env[`${spec.envKey}_RESET`] === 'true'
+    const perluPassword = !existing || reset
+
+    if (perluPassword && IS_PRODUCTION && !process.env[spec.envKey]?.trim()) {
+      throw new Error(
+        `${spec.envKey} wajib diisi di produksi untuk membuat/reset user ` +
+          `"${spec.username}". Isi di environment Render sebelum deploy pertama.`,
+      )
+    }
+
+    return { spec, existing, reset, perluPassword }
+  })
+
   const kredensialDicetak = []
-  for (const spec of USERS) {
+  for (const { spec, existing, reset, perluPassword } of rencanaUser) {
+    // Data profil yang aman diperbarui tanpa menyentuh password.
+    const profil = {
+      nama: spec.nama,
+      role: spec.role,
+      // Jangan menimpa nomor HP yang sudah tersimpan dengan NULL hanya karena
+      // env SEED_*_NOHP tidak diisi.
+      ...(spec.noHp ? { noHp: spec.noHp } : {}),
+    }
+
+    if (!perluPassword) {
+      await prisma.user.update({ where: { username: spec.username }, data: profil })
+      console.log(
+        `[seed] user "${spec.username}" (${spec.role}) sudah ada — password tidak diubah.`,
+      )
+      continue
+    }
+
     const { password, dibuatAcak } = pickPassword(spec.envKey)
     const passwordHash = await bcrypt.hash(password, SALT_ROUNDS)
 
-    await prisma.user.upsert({
-      where: { username: spec.username },
-      create: {
-        nama: spec.nama,
-        username: spec.username,
-        passwordHash,
-        role: spec.role,
-        noHp: spec.noHp,
-      },
-      update: {
-        nama: spec.nama,
-        role: spec.role,
-        noHp: spec.noHp,
-        // Password TIDAK di-overwrite bila user sudah ada, kecuali env diset
-        // eksplisit (memungkinkan reset yang disengaja).
-        ...(process.env[`${spec.envKey}_RESET`] === 'true' ? { passwordHash } : {}),
-      },
-    })
+    if (existing) {
+      await prisma.user.update({
+        where: { username: spec.username },
+        data: { ...profil, passwordHash },
+      })
+      console.log(`[seed] password user "${spec.username}" direset.`)
+    } else {
+      await prisma.user.create({
+        data: {
+          ...profil,
+          username: spec.username,
+          passwordHash,
+          noHp: spec.noHp,
+        },
+      })
+      console.log(`[seed] user "${spec.username}" (${spec.role}) dibuat.`)
+    }
 
     if (dibuatAcak) {
       kredensialDicetak.push({ username: spec.username, password })
-    } else {
-      console.log(`[seed] user "${spec.username}" (${spec.role}) siap.`)
     }
   }
 

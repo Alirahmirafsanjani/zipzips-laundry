@@ -1,7 +1,13 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Plus } from 'lucide-react'
 import { api, ApiError } from '@/lib/api'
-import { formatRupiah, formatTanggal, startOfMonthIso, todayIso } from '@/lib/format'
+import {
+  daysAgoIso,
+  formatRupiah,
+  formatTanggal,
+  startOfMonthIso,
+  todayIso,
+} from '@/lib/format'
 import { Card, CardBody, CardHeader, StatCard } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
 import { Field, Input, Select } from '@/components/ui/Input'
@@ -23,6 +29,7 @@ const KATEGORI_PENGELUARAN: Array<{ value: KategoriPengeluaran; label: string }>
   { value: 'SEWA', label: 'Sewa Tempat' },
   { value: 'TRANSPORTASI', label: 'Transportasi' },
   { value: 'PERAWATAN', label: 'Perawatan Mesin' },
+  { value: 'REFUND', label: 'Refund Pelanggan' },
   { value: 'LAIN_LAIN', label: 'Lain-lain' },
 ]
 
@@ -101,7 +108,7 @@ export function FinancePage() {
 
   const preset = [
     { label: 'Hari ini', from: todayIso(), to: todayIso() },
-    { label: '7 hari', from: `${new Date(Date.now() - 6 * 86400000).toISOString().slice(0, 10)}`, to: todayIso() },
+    { label: '7 hari', from: daysAgoIso(6), to: todayIso() },
     { label: 'Bulan ini', from: startOfMonthIso(), to: todayIso() },
   ]
 
@@ -329,6 +336,13 @@ export function FinancePage() {
               </Select>
             )}
           </Field>
+          {kategori === 'REFUND' && (
+            <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+              Refund pesanan dibuat otomatis saat OWNER membatalkan pesanan
+              berbayar. Catat manual hanya untuk refund di luar alur pesanan agar
+              tidak terhitung dua kali.
+            </p>
+          )}
           <Field label="Keterangan" required>
             {({ id }) => (
               <Input

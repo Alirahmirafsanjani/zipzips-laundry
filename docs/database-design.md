@@ -11,7 +11,7 @@ Migrasi: [`backend/prisma/migrations/`](../backend/prisma/migrations/)
 |---|---|
 | Engine | PostgreSQL 16 |
 | Tabel | 14 |
-| Enum | 10 |
+| Enum | 11 |
 | Skema | `public` (default) |
 | Tipe uang | `Int` (rupiah penuh) |
 | Waktu | `timestamptz` (UTC), konversi ke WIB di aplikasi |
@@ -154,7 +154,7 @@ return 'LUNAS'
 | `serviceId` | uuid | FK → `services`, NOT NULL | |
 | `namaService` | text | NOT NULL | **Snapshot** |
 | `satuan` | SatuanLayanan | NOT NULL | **Snapshot** |
-| `qty` | int | NOT NULL | Kg / jumlah item |
+| `qty` | decimal(10,2) | NOT NULL | Kg / jumlah item; kiloan mendukung 2,5 kg |
 | `hargaSatuan` | int | NOT NULL | **Snapshot** |
 | `subtotal` | int | NOT NULL | `qty × hargaSatuan` |
 | `catatan` | text | NULL | |
@@ -210,7 +210,7 @@ Index: `(orderId, pada)`.
 | `keterangan` | text | NOT NULL |
 | `nominal` | int | NOT NULL |
 | `metodeBayar` | MetodeBayar | NOT NULL |
-| `refType` / `refId` | text | NULL — tautan ke purchase order / mutasi stok |
+| `refType` / `refId` | text | NULL — tautan ke purchase order, mutasi stok, atau `ORDER_REFUND` |
 | `createdById` | uuid | FK → `users`, NOT NULL |
 | `createdAt` | timestamptz | NOT NULL default `now()` |
 
@@ -319,11 +319,12 @@ Index: `(entitas, entitasId)`, `createdAt`, `userId`.
 | `SatuanLayanan` | KG, ITEM |
 | `StatusOrder` | DITERIMA, PROSES, SELESAI, DIAMBIL |
 | `MetodeBayar` | TUNAI, QRIS, TRANSFER |
-| `KategoriPengeluaran` | BAHAN_BAKU, GAJI, LISTRIK_GAS, SEWA, TRANSPORTASI, PERAWATAN, LAIN_LAIN |
+| `KategoriPengeluaran` | BAHAN_BAKU, GAJI, LISTRIK_GAS, SEWA, TRANSPORTASI, PERAWATAN, REFUND, LAIN_LAIN |
 | `KategoriPemasukanLain` | PENJUALAN_BARANG, JASA_TAMBAHAN, LAIN_LAIN |
 | `TipeMutasiStok` | MASUK, KELUAR, PENYESUAIAN |
 | `SatuanProduk` | ML, L, KG, PCS |
 | `SumberOrder` | ONLINE, OFFLINE |
+| `MetodeHubungi` | WHATSAPP, TELEPON, LANGSUNG |
 
 ---
 
@@ -336,8 +337,7 @@ OMZET        = SUM(orders.total)
 
 PENERIMAAN KAS = SUM(payments.nominal - payments.kembalian)
                 + SUM(other_incomes.nominal)
-                WHERE payments.order.voidedAt IS NULL
-                  AND payments.createdAt BETWEEN wibRange(dari, sampai)
+                WHERE payments.createdAt BETWEEN wibRange(dari, sampai)
                   AND other_incomes.tanggal BETWEEN wibRange(dari, sampai)
 
 PENGELUARAN  = SUM(expenses.nominal)
@@ -363,6 +363,11 @@ LABA KAS     = PENERIMAAN KAS - PENGELUARAN
 > `labaKas` **bukan** laba bersih. HPP (deterjen, listrik per kg, gaji karangian)
 > belum dialokasikan ke pesanan. Untuk MVP ini disengaja agar angkanya jujur
 > dan mudah dipercaya pemilik.
+
+> **Void bukan penghapus kas.** Pembayaran pada pesanan void tetap dihitung
+> sebagai penerimaan kas karena uangnya benar-benar pernah masuk. Bila uang
+> dikembalikan, sistem membuat `Expense` kategori `REFUND` pada tanggal refund;
+> omzet dan piutang tetap dikeluarkan karena pekerjaannya dibatalkan.
 
 ---
 
@@ -408,7 +413,8 @@ LABA KAS     = PENERIMAAN KAS - PENGELUARAN
 
 ## 8. Migrasi
 
-- Satu migrasi awal: `20260101000000_init/migration.sql`.
+- Migrasi awal: `20260101000000_init/migration.sql`.
+- Migrasi lanjutan: alur serah terima, piutang/jatuh tempo, dan refund.
 - Dibuat dengan `prisma migrate diff --from-empty --to-schema-datamodel` agar
   persis mengikuti skema.
 - Lock file: `prisma/migrations/migration_lock.toml` (`provider = "postgresql"`).
@@ -416,7 +422,7 @@ LABA KAS     = PENERIMAAN KAS - PENGELUARAN
 **Aturan:**
 
 1. Migration baru = `npx prisma migrate dev --name <deskripsi>`.
-2. Production = `npx prisma migrate deploy` (dipanggil otomatis di `startCommand` Render).
+2. Production = `npx prisma migrate deploy` (dipanggil otomatis di awal `startCommand` Render Free).
 3. **Dilarang** `migrate reset` di produksi.
 4. Migration yang mengubah data (bukan struktur) harus ditulis manual di SQL
    dan diberi `prisma migrate resolve` bila perlu.

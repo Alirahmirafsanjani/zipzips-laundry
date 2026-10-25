@@ -4,6 +4,9 @@
   "private": true,
   "description": "Antarmuka web Sistem Informasi ZIP-ZIPS LAUNDRI (React 19 + Vite 8 + Tailwind CSS 4)",
   "type": "module",
+  "engines": {
+    "node": ">=22.12.0 <25"
+  },
   "scripts": {
     "dev": "vite",
     "build": "vite build",

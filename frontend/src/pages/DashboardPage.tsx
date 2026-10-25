@@ -1,12 +1,21 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { Banknote, Package, Receipt, Shirt, TrendingUp } from 'lucide-react'
+import {
+  Banknote,
+  CalendarClock,
+  MessageCircle,
+  Package,
+  Receipt,
+  RefreshCw,
+  Shirt,
+  TrendingUp,
+} from 'lucide-react'
 import { api } from '@/lib/api'
 import { formatRupiah, formatTanggal, formatAngka } from '@/lib/format'
 import { Card, CardBody, CardHeader, StatCard } from '@/components/ui/Card'
 import { Badge, LABEL_STATUS_ORDER, STATUS_ORDER_TONE } from '@/components/ui/Badge'
 import { EmptyState, PageHeader } from '@/components/ui/EmptyState'
-import { Spinner } from '@/components/ui/Button'
+import { Button, Spinner } from '@/components/ui/Button'
 import { useAuth } from '@/hooks/useAuth'
 import type { DashboardSummary, Order } from '@/types'
 
@@ -15,34 +24,47 @@ export function DashboardPage() {
   const [summary, setSummary] = useState<DashboardSummary | null>(null)
   const [recent, setRecent] = useState<Order[]>([])
   const [loading, setLoading] = useState(true)
+  const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  useEffect(() => {
-    let cancelled = false
-
-    async function load() {
-      try {
-        const [ringkasan, pesanan] = await Promise.all([
-          api.get<DashboardSummary>('/api/dashboard/summary'),
-          api.get<Order[]>('/api/orders?limit=6'),
-        ])
-        if (cancelled) return
-        setSummary(ringkasan)
-        setRecent(pesanan)
-      } catch (err) {
-        if (!cancelled) {
-          setError(err instanceof Error ? err.message : 'Gagal memuat data.')
-        }
-      } finally {
-        if (!cancelled) setLoading(false)
-      }
-    }
-
-    void load()
-    return () => {
-      cancelled = true
+  const muat = useCallback(async (manual = false) => {
+    if (manual) setRefreshing(true)
+    try {
+      const [ringkasan, pesanan] = await Promise.all([
+        api.get<DashboardSummary>('/api/dashboard/summary'),
+        api.get<Order[]>('/api/orders?limit=6'),
+      ])
+      setSummary(ringkasan)
+      setRecent(pesanan)
+      setError(null)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Gagal memuat data.')
+    } finally {
+      setLoading(false)
+      setRefreshing(false)
     }
   }, [])
+
+  useEffect(() => {
+    void muat()
+  }, [muat])
+
+  // Admin perlu tahu begitu ada cucian selesai; jangan menunggu refresh manual.
+  useEffect(() => {
+    const interval = window.setInterval(() => {
+      if (document.visibilityState === 'visible') void muat()
+    }, 30_000)
+
+    const saatTerlihat = () => {
+      if (document.visibilityState === 'visible') void muat()
+    }
+    document.addEventListener('visibilitychange', saatTerlihat)
+
+    return () => {
+      window.clearInterval(interval)
+      document.removeEventListener('visibilitychange', saatTerlihat)
+    }
+  }, [muat])
 
   if (loading) {
     return (
@@ -52,7 +74,7 @@ export function DashboardPage() {
     )
   }
 
-  if (error) {
+  if (error && !summary) {
     return (
       <Card>
         <CardBody>
@@ -79,17 +101,94 @@ export function DashboardPage() {
             : `Ringkasan hari ini — ${formatTanggal(summary?.hariIni ?? '')}`
         }
         action={
-          user?.role !== 'OPERATOR' && (
-            <Link
-              to="/pos"
-              className="inline-flex h-10 items-center gap-2 rounded-lg bg-brand-700 px-4 text-sm font-medium text-white transition-colors hover:bg-brand-800"
+          <div className="flex flex-wrap gap-2">
+            <Button
+              variant="outline"
+              onClick={() => void muat(true)}
+              loading={refreshing}
             >
-              <Shirt className="size-4" />
-              Laundry Baru
-            </Link>
-          )
+              <RefreshCw className="size-4" />
+              Muat ulang
+            </Button>
+            {user?.role !== 'OPERATOR' && (
+              <Link
+                to="/pos"
+                className="inline-flex h-10 items-center gap-2 rounded-lg bg-brand-700 px-4 text-sm font-medium text-white transition-colors hover:bg-brand-800"
+              >
+                <Shirt className="size-4" />
+                Laundry Baru
+              </Link>
+            )}
+          </div>
         }
       />
+
+      {(summary?.belumDihubungi ?? 0) > 0 && (
+        <Link
+          to="/pesanan?belumDihubungi=true"
+          className="mb-4 flex items-center gap-3 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 transition-colors hover:bg-amber-100"
+        >
+          <MessageCircle className="size-5 shrink-0 text-amber-700" />
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-medium text-amber-900">
+              {formatAngka(summary?.belumDihubungi ?? 0)} cucian selesai belum
+              dikabari
+            </p>
+            <p className="text-xs text-amber-700">
+              {isOperator
+                ? 'Admin perlu menghubungi pelanggan agar datang mengambil.'
+                : 'Hubungi pelanggan agar datang mengambil dan membayar.'}
+            </p>
+          </div>
+          <span className="shrink-0 text-sm font-medium text-amber-800">
+            Lihat →
+          </span>
+        </Link>
+      )}
+
+      {(summary?.piutangJatuhTempo ?? 0) > 0 && (
+        <Link
+          to="/pesanan?jatuhTempo=true"
+          className="mb-4 flex items-center gap-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3 transition-colors hover:bg-red-100"
+        >
+          <CalendarClock className="size-5 shrink-0 text-red-700" />
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-medium text-red-900">
+              {formatAngka(summary?.piutangJatuhTempo ?? 0)} piutang jatuh tempo
+              {!isOperator &&
+                summary?.piutangJatuhTempoNominal !== undefined &&
+                ` · ${formatRupiah(summary.piutangJatuhTempoNominal)}`}
+            </p>
+            <p className="text-xs text-red-700">
+              Sudah melewati janji bayar. Buka daftar untuk menagih.
+            </p>
+          </div>
+          <span className="shrink-0 text-sm font-medium text-red-800">
+            Tagih →
+          </span>
+        </Link>
+      )}
+
+      {(summary?.statusCount?.SELESAI ?? 0) > 0 && (
+        <Link
+          to="/pesanan?status=SELESAI"
+          className="mb-4 flex items-center gap-3 rounded-xl border border-sky-200 bg-sky-50 px-4 py-3 transition-colors hover:bg-sky-100"
+        >
+          <Package className="size-5 shrink-0 text-sky-700" />
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-medium text-sky-900">
+              {formatAngka(summary?.statusCount?.SELESAI ?? 0)} cucian siap
+              diambil
+            </p>
+            <p className="text-xs text-sky-700">
+              Cek pelanggan yang belum dikabari, lalu siapkan serah terima.
+            </p>
+          </div>
+          <span className="shrink-0 text-sm font-medium text-sky-800">
+            Buka antrean →
+          </span>
+        </Link>
+      )}
 
       {isOperator ? (
         /* Karangian: angka operasional saja, tanpa angka uang. */
@@ -187,7 +286,7 @@ export function DashboardPage() {
         )}
 
         <Card className={isOperator ? 'lg:col-span-3' : undefined}>
-          <CardHeader title="Status pengerjaan" subtitle="Pesanan aktif saat ini" />
+          <CardHeader title="Status pengerjaan" subtitle="Ringkasan semua pesanan" />
           <CardBody className="space-y-2.5">
             {(['DITERIMA', 'PROSES', 'SELESAI', 'DIAMBIL'] as const).map((status) => (
               <div

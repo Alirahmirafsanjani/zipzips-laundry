@@ -84,6 +84,17 @@ Prioritas menunjukkan urutan pengerjaan (lihat [implementation-plan.md](implemen
 | F-31 | Transisi status yang tidak sah ditolak (mis. DITERIMA → DIAMBIL). |
 | F-32 | Setiap perubahan status tercatat dengan pelaku, waktu, dan catatan → tampil sebagai timeline. |
 | F-33 | Karangian (OPERATOR) dapat mengubah status. |
+| F-34 | Setelah `SELESAI`, admin/kasir dapat mencatat bahwa pelanggan sudah dihubungi (WhatsApp/telepon/langsung), beserta waktu, pelaku, dan jumlah kontak. |
+| F-35 | Pesan WhatsApp siap kirim berisi nama toko, nomor nota, total, dan sisa tagihan (deep link `wa.me`, tanpa API WhatsApp). |
+| F-36 | Daftar kerja admin menampilkan cucian `SELESAI` yang **belum dihubungi** (`belumDihubungi=true`), diperbarui otomatis di beranda. |
+| F-37 | Nota 80 mm dapat dicetak dari POS dan detail pesanan: identitas toko, item/berat, estimasi selesai, total, DP, sisa, dan catatan struk. |
+| F-38 | Saat serah terima menyisakan piutang, admin dapat menetapkan tanggal janji bayar; piutang yang lewat tanggal tampil di filter "Jatuh tempo". |
+
+> Catatan implementasi: OPERATOR memakai endpoint status untuk
+> `DITERIMA → PROSES → SELESAI`. Perpindahan ke `DIAMBIL` hanya melalui
+> `POST /api/orders/:id/serahkan` (OWNER/KASIR) agar pembayaran/piutang dan
+> audit serah terima tidak terlewat. OPERATOR tetap dapat mengisi
+> `catatanPengerjaan`; catatan pelanggan tetap milik OWNER/KASIR.
 
 ### 3.5 [P1] Status Pembayaran
 
@@ -106,6 +117,8 @@ Prioritas menunjukkan urutan pengerjaan (lihat [implementation-plan.md](implemen
 | F-55 | Pembayaran pada pesanan lunas atau dibatalkan ditolak. |
 | F-56 | Referensi QRIS (kode / merchant) dapat dicatat manual — **tanpa integrasi API QRIS**. |
 | F-57 | Pembayaran bersamaan pada satu pesanan tidak boleh membuat total dibayar melebihi total (isolasi SERIALIZABLE + retry). |
+| F-58 | Serah terima (`serahkan`) mencatat pembayaran (opsional) dan status `DIAMBIL` dalam **satu transaksi**; hanya dari status `SELESAI`. |
+| F-59 | Serah terima tanpa pembayaran diperbolehkan; sisa tagihan tetap tercatat sebagai piutang. |
 
 ### 3.7 [P1] Pembatalan Pesanan (Void)
 
@@ -114,15 +127,16 @@ Prioritas menunjukkan urutan pengerjaan (lihat [implementation-plan.md](implemen
 | F-60 | Hanya OWNER yang dapat membatalkan pesanan. |
 | F-61 | Pembatalan wajib disertai alasan (min. 3 karakter). |
 | F-62 | Pesanan yang dibatalkan **tidak dihapus**, ditandai `voidedAt` + alasan + pelaku. |
-| F-63 | Pesanan void dikeluarkan dari omzet, penerimaan kas, dan daftar default. |
+| F-63 | Pesanan void dikeluarkan dari omzet, jumlah pesanan, piutang, dan daftar default. Pembayaran yang sudah masuk **tetap** dihitung sebagai penerimaan kas. |
 | F-64 | Pesanan void tidak bisa dibayar ulang; void kedua ditolak. |
+| F-65 | Void pesanan yang sudah menerima pembayaran wajib menyertakan keputusan refund eksplisit: nominal 0 sampai `totalDibayar`. Refund > 0 dicatat sebagai `Expense` kategori `REFUND` dalam transaksi yang sama. |
 
 ### 3.8 [P1] Pengeluaran & Pemasukan Lain
 
 | ID | Kebutuhan |
 |---|---|
 | F-70 | OWNER mencatat pengeluaran: tanggal, kategori, keterangan, nominal, metode bayar. |
-| F-71 | Kategori pengeluaran: BAHAN_BAKU, GAJI, LISTRIK_GAS, SEWA, TRANSPORTASI, PERAWATAN, LAIN_LAIN. |
+| F-71 | Kategori pengeluaran: BAHAN_BAKU, GAJI, LISTRIK_GAS, SEWA, TRANSPORTASI, PERAWATAN, REFUND, LAIN_LAIN. |
 | F-72 | OWNER mencatat pemasukan di luar laundry (mis. jual hanger, jasa tambahan). |
 | F-73 | Kategori pemasukan lain: PENJUALAN_BARANG, JASA_TAMBAHAN, LAIN_LAIN. |
 | F-74 | Pengeluaran & pemasukan lain dapat diekspor ke CSV (pemisah `;`, BOM Excel-friendly). |
@@ -134,7 +148,7 @@ Definisi metrik dikunci — lihat [database-design.md](database-design.md) § Me
 | ID | Kebutuhan |
 |---|---|
 | F-80 | **Omzet** = SUM(total pesanan belum void) berdasarkan tanggal pesanan masuk. |
-| F-81 | **Penerimaan kas** = SUM(pembayaran − kembalian) + SUM(pemasukan lain) berdasarkan tanggal pembayaran. |
+| F-81 | **Penerimaan kas** = SUM(pembayaran − kembalian) + SUM(pemasukan lain) berdasarkan tanggal pembayaran, termasuk pembayaran pada pesanan yang kemudian void. |
 | F-82 | **Pengeluaran** = SUM(pengeluaran) berdasarkan tanggal pengeluaran. |
 | F-83 | **Piutang** = SUM(total − totalDibayar) seluruh pesanan aktif, lintas tanggal. |
 | F-84 | **Laba kas** = penerimaan kas − pengeluaran. **Bukan laba bersih** (HPP belum dihitung). |
@@ -145,7 +159,7 @@ Definisi metrik dikunci — lihat [database-design.md](database-design.md) § Me
 
 | ID | Kebutuhan |
 |---|---|
-| F-90 | Omzet hari ini, diterima hari ini, belum dibayar hari ini, jumlah pesanan hari ini. |
+| F-90 | Omzet hari ini (total pesanan masuk hari ini), diterima hari ini (kas masuk berdasarkan tanggal pembayaran, termasuk pembayaran pesanan yang kemudian void), belum dibayar hari ini (sisa tagihan pesanan yang masuk hari ini), jumlah pesanan hari ini. |
 | F-91 | Jumlah pesanan per status pengerjaan. |
 | F-92 | Total piutang. |
 | F-93 | OPERATOR melihat ringkasan **tanpa** angka keuangan. Backend tidak mengirim angka keuangan ke role OPERATOR; UI juga menyembunyikannya. |

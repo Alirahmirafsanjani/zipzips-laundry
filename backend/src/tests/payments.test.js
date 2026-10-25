@@ -39,6 +39,11 @@ describe('Pembayaran', () => {
     expect(body.order.totalDibayar).toBe(14000)
     expect(body.order.sisaTagihan).toBe(0)
     expect(body.order.statusPembayaran).toBe('LUNAS')
+    // Respons harus lengkap: POS/detail memakai items, payments, dan timeline.
+    expect(body.order.items).toHaveLength(1)
+    expect(body.order.items[0].namaService).toBeTruthy()
+    expect(body.order.payments).toHaveLength(1)
+    expect(body.order.statusHistory.length).toBeGreaterThan(0)
   })
 
   it('menghitung kembalian untuk pembayaran tunai kelebihan', async () => {

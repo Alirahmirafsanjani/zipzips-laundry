@@ -81,17 +81,34 @@ input[type='number'] {
   animation: fade-in-up 0.18s ease-out;
 }
 
-/* Cetak struk */
+/* Cetak struk 80 mm: sembunyikan aplikasi, tampilkan hanya .print-area. */
 @media print {
+  @page {
+    size: 80mm auto;
+    /* 4 mm margin menyisakan area cetak ±72 mm pada kertas thermal 80 mm. */
+    margin: 4mm;
+  }
+
   .no-print {
     display: none !important;
   }
+
   body {
     background: white;
   }
-  .print-area {
-    position: absolute;
-    inset: 0;
+
+  /* Receipt dirender lewat portal langsung di <body>, jadi aplikasi bisa
+     disembunyikan total tanpa menyisakan halaman kosong. */
+  body > * {
+    display: none !important;
+  }
+
+  body > .print-area {
+    display: block !important;
+    width: auto;
+    max-width: 72mm;
     padding: 0;
+    margin: 0 auto;
+    background: white;
   }
 }

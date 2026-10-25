@@ -3,11 +3,13 @@
 Sistem informasi untuk operasional laundry **ZIP-ZIPS LAUNDRI**, outlet Bantul, Yogyakarta.
 Dibangun untuk owner + 3 karyawan (1 kasir, 2 karangian) dengan fokus pada:
 
-1. **POS laundry** (poni, kiloan, satuan) — cepat dipakai kasir.
+1. **POS laundry** (kiloan, satuan, express) — cepat dipakai kasir.
 2. **Manajemen pesanan** — status pengerjaan terpisah dari status pembayaran.
-3. **Pencatatan pembayaran** — tunai / QRIS / transfer,manual, tanpa integrasi API.
+3. **Pencatatan pembayaran** — tunai / QRIS / transfer manual, tanpa integrasi API.
 4. **Omzet & laporan keuangan** — omzet, penerimaan kas, pengeluaran, laba kas, piutang.
-5. **Inventori bahan** — stok berbasis mutasi (ledger), bukan pengurangan kolom.
+5. **Inventori bahan (API)** — stok berbasis mutasi (ledger), bukan pengurangan
+   kolom. UI stok belum diaktifkan di navigasi; gunakan API sampai layar stok
+   selesai diverifikasi.
 
 Semua uang disimpan sebagai **integer rupiah penuh** (tanpa desimal).
 
@@ -107,9 +109,11 @@ npx prisma migrate deploy    # terapkan migrasi (aman, non-destruktif)
 npm run db:seed              # data awal + cetak kredensial acak
 ```
 
-`seed.js` **tidak pernah memakai password hardcoded**. Bila `SEED_OWNER_PASSWORD` /
-`SEED_KASIR_PASSWORD` / `SEED_OPERATOR_PASSWORD` tidak diisi, seed membuat
-password acak lalu **mencetakkannya di terminal**. Catat password itu.
+`seed.js` **tidak pernah memakai password hardcoded**. Di development, bila
+`SEED_OWNER_PASSWORD` / `SEED_KASIR_PASSWORD` / `SEED_OPERATOR_PASSWORD` tidak
+diisi, seed membuat password acak lalu mencetaknya di terminal. Di production,
+seed **menolak** password acak dan gagal cepat agar kredensial tidak hilang di
+log Render. User yang sudah ada tidak diubah passwordnya.
 
 ### 4. Jalankan backend
 
@@ -136,7 +140,7 @@ npm run dev                  # http://localhost:5173
 
 ```bash
 cd backend
-npm test                     # 55 integration test, butuh DB `zipzips_test`
+npm test                     # 83 integration test, butuh DB `zipzips_test`
 ```
 
 > Test memakai database **terpisah** (`zipzips_test`) dan menolak jalan bila
@@ -149,9 +153,9 @@ npm test                     # 55 integration test, butuh DB `zipzips_test`
 
 | Lokasi | Perintah | Fungsi |
 |---|---|---|
-| root | `npm run dev` | jalankan backend + frontend bersamaan |
+| root | `npm run dev:backend` / `npm run dev:frontend` | jalankan backend / frontend (terminal terpisah) |
 | root | `npm run build` | build frontend |
-| root | `npm test` | jalankan test backend |
+| root | `npm test` | jalankan test backend + frontend |
 | backend | `npm run dev` | API dengan nodemon |
 | backend | `npm run start` | API mode production |
 | backend | `npm run db:migrate` | buat & jalankan migrasi (dev) |
@@ -190,28 +194,32 @@ Semua endpoint diawali `/api`. Autentikasi memakai header
 | GET | `/api/auth/me` | semua |
 | POST | `/api/auth/change-password` | semua |
 | GET/POST | `/api/users`, PATCH `/api/users/:id`, POST `/api/users/:id/reset-password` | OWNER |
-| GET/POST | `/api/services`, PATCH `/api/services/:id`, POST `/api/services/:id/arsipkan` | semua (tulis: OWNER) |
-| GET/POST | `/api/customers`, PATCH `/api/customers/:id` | semua (tulis: OWNER/KASIR) |
+| GET/POST | `/api/services`, PATCH `/api/services/:id`, POST `/api/services/:id/arsipkan` | baca: semua (harga disembunyikan untuk OPERATOR); tulis: OWNER |
+| GET/POST | `/api/customers`, PATCH `/api/customers/:id` | OWNER/KASIR |
 | GET/POST | `/api/orders`, GET `/api/orders/:id` | semua |
 | PATCH | `/api/orders/:id/status` | OWNER/KASIR/OPERATOR |
-| PATCH | `/api/orders/:id/catatan` | OWNER/KASIR/OPERATOR |
+| POST | `/api/orders/:id/hubungi` | OWNER/KASIR |
+| POST | `/api/orders/:id/serahkan` | OWNER/KASIR |
+| PATCH | `/api/orders/:id/catatan` | OWNER/KASIR; OPERATOR hanya `catatanPengerjaan` |
 | POST | `/api/orders/:id/void` | OWNER |
 | GET/POST | `/api/orders/:id/pembayaran` | OWNER/KASIR |
-| GET | `/api/payments` | OWNER |
-| GET | `/api/inventory/produk`, `/api/inventory/mutasi` | OWNER/KASIR |
-| POST/PATCH | `/api/inventory/produk`, `/api/inventory/mutasi` | OWNER |
+| GET | `/api/payments` | OWNER/KASIR |
+| GET/POST/PATCH | `/api/inventory/produk`, `/api/inventory/mutasi` | OWNER |
 | GET | `/api/finance/ringkasan`, `/api/finance/laba-rugi` | OWNER |
 | GET/POST | `/api/finance/pengeluaran`, `/api/finance/pemasukan-lain` | OWNER |
 | GET | `/api/finance/ekspor/pengeluaran.csv` | OWNER |
 | GET | `/api/dashboard/summary` | semua |
-| GET | `/api/settings`, PUT `/api/settings/:key` | OWNER (publik: `/publik`) |
+| GET | `/api/settings` | semua (publik: `/publik`) |
+| PUT | `/api/settings/:key` | OWNER |
 | GET | `/api/audit` | OWNER |
 
 ---
 
 ## Prinsip Desain yang Dihormati
 
-1. **Transaksi tidak pernah dihapus.** Pembatalan = `voidedAt` + alasan + jejak audit.
+1. **Transaksi tidak pernah dihapus.** Pembatalan = `voidedAt` + alasan + jejak
+   audit. Kas yang sudah masuk tetap tercatat; refund dicatat sebagai
+   pengeluaran kategori `REFUND`.
 2. **Status pengerjaan ≠ status pembayaran.** Status bayar diturunkan dari
    `totalDibayar` vs `total`, tidak disimpan sebagai kolom.
 3. **Harga di-snapshot** di `OrderItem`. Ubah harga master tidak mengubah nota lama.
@@ -232,8 +240,19 @@ Ringkas; detail ada di [docs/architecture.md](docs/architecture.md).
    bukan transaction pooler (6543).
 2. Push repo ke GitHub.
 3. Di Render: **New → Blueprint** → arahkan ke repo ini (pakai `render.yaml`).
-4. Isi environment variable: `DATABASE_URL`, `JWT_SECRET`, `CORS_ORIGIN`.
-5. Backup otomatis berjalan via GitHub Actions setiap malam.
+   `JWT_SECRET` dibuat otomatis oleh Render. Isi `DATABASE_URL`, `CORS_ORIGIN`,
+   dan tiga `SEED_*_PASSWORD` saat Blueprint meminta.
+4. `startCommand` menjalankan migrasi (`prisma migrate deploy`) sebelum server
+   start, karena pre-deploy command Render hanya tersedia untuk layanan
+   berbayar. Setelah deploy pertama, `initialDeployHook` menjalankan seed
+   **sekali**. Setelah login pertama berhasil, `SEED_*_PASSWORD` boleh dihapus
+   dari dashboard.
+5. Di GitHub → **Settings → Secrets and variables → Actions**, isi:
+   - `API_URL` = URL API tanpa `/api` (untuk keep-alive 06:00–21:00 WIB).
+   - `DATABASE_URL` = connection string Supabase (untuk backup harian).
+6. Jalankan workflow **Keep-alive API** dan **Backup Database** sekali secara
+   manual untuk memastikan konfigurasi benar.
 
-> Render Free **tidur setelah 15 menit idle**. Aplikasi menangani ini dengan
-> pinger 06:00–21:00 WIB (lihat `docs/architecture.md` § Pem resiliency).
+> Render Free **tidur setelah 15 menit idle**. `.github/workflows/keep-alive.yml`
+> memanggil `/api/health` tiap 10 menit pada jam operasional. Di luar jam itu
+> service boleh tidur (lihat `docs/architecture.md` § 6.4).

@@ -1,6 +1,6 @@
 # Rencana Pengujian — ZIP-ZIPS LAUNDRI
 
-Status: **P1 selesai — 55 integration test otomatis, semua lulus.**
+Status: **P1 selesai — 83 integration test otomatis, semua lulus.**
 
 ---
 
@@ -9,7 +9,7 @@ Status: **P1 selesai — 55 integration test otomatis, semua lulus.**
 | Lapisan | Alat | Cakupan | Status |
 |---|---|---|---|
 | **Unit** | — | Diperiksa manual di dalam service; logika murni (wib, order-no, csv) | ⚠️ belum ada file unit test terpisah |
-| **Integration (API)** | vitest + supertest | Seluruh endpoint & aturan bisnis | ✅ 55 test, 5 file |
+| **Integration (API)** | vitest + supertest | Seluruh endpoint & aturan bisnis | ✅ 83 test, 7 file |
 | **Build/type** | `tsc --noEmit` + `vite build` | Kompilasi frontend | ✅ bersih |
 | **Manual / UAT** | Checklist | Alur dunia nyata | 📋 lihat § 6 |
 | **E2E browser** | — | Alur klik di browser | ❌ belum (P7, kalau waktu memungkinkan) |
@@ -71,7 +71,7 @@ TEST_DATABASE_URL="postgresql://.../zipzips_test?schema=public" npm test
 | 13 | Username ganda | **409** `USERNAME_TAKEN` |
 | 14 | Menonaktifkan owner terakhir | **409** `OWNER_TERAKHIR` |
 
-### 3.2 `orders.test.js` — 16 test
+### 3.2 `orders.test.js` — 21 test
 
 | # | Skenario | Ekspektasi |
 |---|---|---|
@@ -91,6 +91,11 @@ TEST_DATABASE_URL="postgresql://.../zipzips_test?schema=public" npm test
 | 14 | Void dua kali | **409** `SUDAH_VOID` |
 | 15 | Cari pesanan by nomor nota | 1 hasil |
 | 16 | Filter status | `PROSES` → 1, `DITERIMA` → 0 |
+| 17 | Operator tidak menerima angka keuangan | `total`, `totalDibayar`, `sisaTagihan`, `statusPembayaran`, `payments`, dan harga item tidak ada |
+| 18 | Harga satuan di atas master | 422 `HARGA_MELEBIHI_MASTER` |
+| 19 | `DIAMBIL` lewat endpoint status | 422 `TRANSISI_INVALID`; wajib lewat `serahkan` |
+| 20 | Operator isi catatan pengerjaan | 200; field uang tetap tidak ada |
+| 21 | Operator ubah catatan pelanggan | 403 |
 
 ### 3.3 `payments.test.js` — 10 test
 
@@ -110,18 +115,20 @@ TEST_DATABASE_URL="postgresql://.../zipzips_test?schema=public" npm test
 > Test #8 adalah pembuktian bahwa `serializableTransaction` + retry bekerja pada
 > kondisi nyata, bukan hanya di atas kertas.
 
-### 3.4 `finance.test.js` — 8 test
+### 3.4 `finance.test.js` — 10 test
 
 | # | Skenario | Ekspektasi |
 |---|---|---|
 | 1 | **Pisahkan 4 metrik** | Omzet 70000, penerimaan kas 70000, pengeluaran 25000, laba kas 45000, 1 pesanan |
 | 2 | **Omzet ≠ penerimaan kas** | Pesanan bergeser 2 hari → omzet hari ini 0, penerimaan hari ini 0 |
-| 3 | **Void dikeluarkan** | Omzet 0, penerimaan kas 0, jumlah pesanan 0 |
+| 3 | **Void + refund penuh** | Omzet 0, jumlah pesanan 0, penerimaan kas 70000, pengeluaran REFUND 70000, laba kas 0 |
 | 4 | **Piutang lintas tanggal** | Bayar 30000 dari 70000 → piutang 40000 |
 | 5 | Pemisahan laundry vs pemasukan lain | `penerimaanLaundry` 7000, `penerimaanLain` 5000, `penerimaanKas` 12000, `perMetode.QRIS` 7000, `perMetode.TUNAI` 5000 |
 | 6 | Rincian harian | 1 slot, `tanggal` benar, omzet 14000, jumlah pesanan 1 |
 | 7 | Rincian pengeluaran per kategori | BAHAN_BAKU 10000, GAJI 50000, LISTRIK_GAS 15000, total 75000 |
-| 8 | Ringkasan beranda | Omzet hari ini 28000, diterima 14000, belum dibayar 14000, 1 pesanan, `statusCount.DITERIMA` 1, piutang 14000 |
+| 8 | Kas masuk berdasarkan tanggal pembayaran | Pembayaran kemarin → omzet hari ini tetap 7000, diterima hari ini 0, sisa tagihan 0 |
+| 9 | Ringkasan beranda | Omzet hari ini 28000, diterima 14000, belum dibayar 14000, 1 pesanan, `statusCount.DITERIMA` 1, piutang 14000 |
+| 10 | Total pesanan aktif | Pesanan yang sudah `DIAMBIL` tidak dihitung aktif |
 
 ### 3.5 `inventory.test.js` — 7 test
 
@@ -134,6 +141,31 @@ TEST_DATABASE_URL="postgresql://.../zipzips_test?schema=public" npm test
 | 5 | Stok menipis | stok 3000 ≤ minimum 5000 → `stokMenipis` true |
 | 6 | Kasir catat mutasi | **403** |
 | 7 | PENYESUAIAN tanpa `stokAkhir` | 422 |
+
+### 3.6 `handover.test.js` — 15 test
+
+| # | Skenario | Ekspektasi |
+|---|---|---|
+| 1–2 | Berat kiloan desimal | 2,5 kg dihitung benar; desimal ditolak untuk layanan ITEM |
+| 3 | Transisi status linear | `DITERIMA → SELESAI` ditolak 422; harus melalui `PROSES` |
+| 4–5 | Kontak pelanggan | Hanya setelah `SELESAI`; WhatsApp tanpa nomor HP ditolak |
+| 6 | Serah terima sebelum selesai | 422 |
+| 7 | Serah terima + bayar lunas | Status `DIAMBIL`, pembayaran tercatat, piutang 0 |
+| 8 | Serah terima tanpa bayar | Tetap `DIAMBIL`; sisa menjadi piutang |
+| 9–12 | Idempotensi | Retry pesanan/pembayaran tidak menggandakan; key lintas pesanan ditolak |
+| 13 | Koreksi OWNER | `SELESAI → PROSES` mereset bukti “sudah dihubungi” |
+| 14–15 | Janji bayar | Tersimpan bila masih ada sisa; ditolak bila tanggal masa lalu; tidak disimpan bila lunas |
+
+### 3.7 `refund.test.js` — 6 test
+
+| # | Skenario | Ekspektasi |
+|---|---|---|
+| 1 | Void pesanan berbayar tanpa keputusan refund | **422** `REFUND_WAJIB_DIPUTUSKAN`; pesanan tetap aktif |
+| 2 | Refund penuh | `Expense` kategori `REFUND`; kas masuk tetap 70000; laba kas 0 |
+| 3 | Refund 0 eksplisit | Void sukses, tidak ada `Expense`; kas masuk dan laba kas tetap |
+| 4 | Refund sebagian | Kas masuk 70000, pengeluaran 30000, laba kas 40000 |
+| 5 | Refund melebihi pembayaran | **422** `REFUND_MELEBIHI_PEMBAYARAN` |
+| 6 | Void pesanan belum berbayar | Sukses tanpa `Expense` |
 
 ---
 
@@ -193,10 +225,11 @@ Dilakukan pemilik setelah deploy. Target: **semua centang**.
 
 ### C. Status pengerjaan
 
-- [ ] DITERIMA → PROSES → SELESAI → DIAMBIL berhasil.
+- [ ] DITERIMA → PROSES → SELESAI berhasil lewat tombol status.
+- [ ] SELESAI → DIAMBIL berhasil lewat "Serahkan & Bayar"; coba lewat endpoint status → ditolak.
 - [ ] Coba DITERIMA → DIAMBIL langsung → ditolak.
 - [ ] Timeline menampilkan riwayat lengkap dengan nama petugas.
-- [ ] Login sebagai operator → bisa ubah status, tidak bisa buat pesanan.
+- [ ] Login sebagai operator → bisa ubah status sampai SELESAI dan mengisi catatan pengerjaan; tidak bisa membuat pesanan, melihat uang, atau menyerahkan cucian.
 
 ### D. Pembayaran
 
@@ -210,7 +243,9 @@ Dilakukan pemilik setelah deploy. Target: **semua centang**.
 
 ### E. Pembatalan
 
-- [ ] Owner membatalkan pesanan → alasan wajib, pesanan hilang dari daftar.
+- [ ] Owner membatalkan pesanan belum bayar → alasan wajib, pesanan hilang dari daftar.
+- [ ] Owner membatalkan pesanan berbayar → wajib mengisi refund; coba refund 0 dan refund sebagian.
+- [ ] Setelah refund penuh, laporan menunjukkan kas masuk dan pengeluaran REFUND yang sama.
 - [ ] Menu "Tampilkan yang dibatalkan" → pesanan ada, ditandai.
 - [ ] Kasir mencoba membatalkan → tidak ada tombol / ditolak 403.
 
@@ -269,9 +304,9 @@ cd frontend && npx tsc --noEmit && npm run build
 ## 8. Status Saat Ini
 
 ```
-Test Files  5 passed (5)
-     Tests  55 passed (55)
-  Duration  ~4 detik
+Test Files  7 passed (7)
+     Tests  83 passed (83)
+  Duration  ~6 detik
 ```
 
 Yang **belum** diverifikasi otomatis: rendering UI (React), perilaku offline

@@ -24,13 +24,14 @@ services:
     rootDir: backend
     # prisma CLI ada di devDependencies, jadi --include=dev wajib.
     buildCommand: npm ci --include=dev && npx prisma generate
-    # Migrasi otomatis setiap deploy (non-destruktif: `migrate deploy` hanya
-    # menerapkan migrasi yang belum dijalankan, tidak menghapus data).
-    #
-    # CATATAN: `prisma db seed` SENGAJA TIDAK dijalankan di sini. Seed membuat
-    # password acak yang hanya dicetak ke terminal — tidak bisa dikirim lewat
-    # log Render. Jalankan seed sekali secara manual (lihat README § 3).
-    startCommand: npx prisma migrate deploy && npm start
+    # Render Free TIDAK mendukung preDeployCommand (hanya layanan berbayar).
+    # Jalankan migrasi di awal startCommand: bila migrasi gagal, server tidak
+    # start dan Render mempertahankan instance lama yang masih sehat.
+    startCommand: npm run db:deploy && npm start
+    # Seed dijalankan SEKALI setelah deploy pertama berhasil. Seed idempoten:
+    # user yang sudah ada tidak diubah passwordnya. Di produksi, seed menolak
+    # membuat password acak — isi SEED_*_PASSWORD di bawah.
+    initialDeployHook: npm run db:seed
     healthCheckPath: /api/health
     autoDeployTrigger: commit
     envVars:
@@ -40,14 +41,23 @@ services:
       # DATABASE_URL (Supabase session pooler, port 5432, sslmode=require)
       - key: DATABASE_URL
         sync: false
-      # JWT_SECRET acak >= 32 karakter
+      # JWT_SECRET dibuat otomatis oleh Render (256-bit) dan disimpan sebagai
+      # secret. Nilai lama tidak ditimpa bila sudah ada.
       - key: JWT_SECRET
-        sync: false
+        generateValue: true
       - key: JWT_EXPIRES_IN
         value: 12h
-      # Origin frontend, TANPA trailing slash. Contoh:
-      #   https://zipzips-web.onrender.com
+      # Origin frontend. Boleh lebih dari satu, pisahkan dengan koma.
+      # Contoh: https://zipzips-web.onrender.com
       - key: CORS_ORIGIN
+        sync: false
+      # Password awal. Wajib diisi sebelum deploy pertama; setelah seed
+      # berhasil, nilainya boleh dihapus dari dashboard.
+      - key: SEED_OWNER_PASSWORD
+        sync: false
+      - key: SEED_KASIR_PASSWORD
+        sync: false
+      - key: SEED_OPERATOR_PASSWORD
         sync: false
       - key: LOGIN_RATE_LIMIT
         value: "10"

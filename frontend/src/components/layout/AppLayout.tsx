@@ -2,7 +2,6 @@ import { useState, type ReactNode } from 'react'
 import { NavLink, Outlet, useNavigate } from 'react-router-dom'
 import {
   Banknote,
-  Boxes,
   LayoutDashboard,
   LogOut,
   Menu,
@@ -11,7 +10,6 @@ import {
   Settings,
   Shirt,
   UserCog,
-  Users,
   X,
 } from 'lucide-react'
 import { useAuth } from '@/hooks/useAuth'
@@ -35,11 +33,9 @@ const NAV_ITEMS: NavItem[] = [
     roles: ['OWNER', 'KASIR', 'OPERATOR'],
     end: true,
   },
-  { to: '/pos', label: 'POS / Laundry Baru', icon: Shirt, roles: ['OWNER', 'KASIR'] },
-  { to: '/pesanan', label: 'Pesanan', icon: Receipt, roles: ['OWNER', 'KASIR', 'OPERATOR'] },
-  { to: '/pelanggan', label: 'Pelanggan', icon: Users, roles: ['OWNER', 'KASIR'] },
+  { to: '/pos', label: 'Pesanan Baru', icon: Shirt, roles: ['OWNER', 'KASIR'] },
+  { to: '/pesanan', label: 'Daftar Pesanan', icon: Receipt, roles: ['OWNER', 'KASIR', 'OPERATOR'] },
   { to: '/keuangan', label: 'Keuangan', icon: Banknote, roles: ['OWNER'] },
-  { to: '/stok', label: 'Stok Bahan', icon: Boxes, roles: ['OWNER'] },
   { to: '/pengguna', label: 'Pengguna', icon: UserCog, roles: ['OWNER'] },
   { to: '/pengaturan', label: 'Pengaturan', icon: Settings, roles: ['OWNER'] },
 ]

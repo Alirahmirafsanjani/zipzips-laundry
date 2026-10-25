@@ -45,7 +45,7 @@ Versi: 1.0 · Dewasa: MVP (P1–P5)
                ▼
 ┌──────────────────────────────────────────────┐
 │  Supabase Free (PostgreSQL 16)               │
-│  14 tabel · 10 enum                          │
+│  14 tabel · 11 enum                          │
 └──────────────────────────────────────────────┘
 
 GitHub Actions (cron 02:00 WIB) ──pg_dump──▶ Artifact backup (retensi 14 hari)
@@ -309,10 +309,17 @@ diminta secara sadar. Ini **tidak** dikerjakan di MVP agar kompleksitas tetap re
 | `NODE_ENV` | `production` | Mengaktifkan validasi JWT_SECRET & CORS ketat |
 | `PORT` | `4000` | Render meng-inject `PORT` sendiri |
 | `DATABASE_URL` | `postgresql://...@aws-0-ap-southeast-1.pooler.supabase.com:5432/postgres?sslmode=require&connection_limit=5&pool_timeout=20` | **WAJIB** session pooler port 5432 |
-| `JWT_SECRET` | acak ≥ 32 karakter | Generate: `node -e "console.log(require('crypto').randomBytes(48).toString('base64url'))"` |
+| `JWT_SECRET` | dibuat otomatis oleh Render (`generateValue`) | Bisa juga diisi manual ≥ 32 karakter |
 | `JWT_EXPIRES_IN` | `12h` | |
-| `CORS_ORIGIN` | URL static site Render | Dipisah koma bila multi origin |
+| `CORS_ORIGIN` | URL static site Render | **Wajib di produksi.** Dipisah koma bila multi origin; path/trailing slash dinormalisasi ke origin |
+| `SEED_OWNER_PASSWORD` | rahasia | Wajib sebelum deploy pertama; boleh dihapus setelah seed |
+| `SEED_KASIR_PASSWORD` | rahasia | Idem |
+| `SEED_OPERATOR_PASSWORD` | rahasia | Idem |
 | `LOGIN_RATE_LIMIT` | `10` | |
+
+> **Fail-fast produksi:** backend menolak start bila `DATABASE_URL`,
+> `JWT_SECRET` (< 32 karakter), atau `CORS_ORIGIN` kosong/tidak valid. Ini
+> mencegah deploy “sukses” tetapi frontend tidak bisa login.
 
 **Frontend (Render Static):**
 
@@ -326,6 +333,19 @@ diminta secara sadar. Ini **tidak** dikerjakan di MVP agar kompleksitas tetap re
 
 > `VITE_*` di-inline saat build. Mengubahnya butuh **rebuild**, bukan restart.
 
+**Urutan deploy (`render.yaml`):**
+
+1. Build: `npm ci --include=dev && npx prisma generate`.
+2. Start: `npm run db:deploy && npm start` — migrasi berjalan lebih dulu; bila
+   gagal, server tidak start dan instance lama tetap melayani. Ini dipakai
+   karena Render Free tidak mendukung `preDeployCommand`.
+3. `initialDeployHook`: `npm run db:seed` — hanya setelah deploy pertama
+   berhasil. Seed idempoten; user lama tidak diubah passwordnya.
+
+Node dikunci lewat `engines.node` di root **dan** tiap workspace:
+`>=22.12.0 <25` (Vite 8 butuh ≥22.12.0; Render memilih versi 24.x yang
+masih didukung).
+
 ### 6.3 Kenapa Session Pooler (5432), bukan Transaction Pooler (6543)
 
 Prisma Migrate dan `$transaction` interaktif membutuhkan **session state** dan
@@ -335,12 +355,13 @@ hasilnya error saat migrasi atau saat transaksi berserial. Karena itu
 
 ### 6.4 Render Free "Tidur" (Sleep)
 
-Render Free_scale_free measured instance tidur setelah 15 menit idle. Dampak:
+Render Free menidurkan instance setelah 15 menit idle. Dampak:
 request pertama setelah tidur lambat (bisa 30–50 detik).
 
 Mitigasi:
-1. **Pinger keep-alive** — kecil di frontend, memanggil `/api/health` tiap 10 menit
-   antara 06:00–21:00 WIB. Di luar jam itu, service boleh tidur (tidak ada transaksi).
+1. **Pinger keep-alive** — `.github/workflows/keep-alive.yml` memanggil
+   `/api/health` tiap 10 menit antara 06:00–21:00 WIB. Di luar jam itu service
+   boleh tidur (tidak ada transaksi). Butuh secret/variable `API_URL`.
 2. **`/api/health` tanpa query DB** — stay fast, tidak membebani Supabase.
 3. **UI "Menyambung…"** — saat request lambat, frontend menampilkan indikator
    bahwa koneksi sedang dibangun, bukan error.
@@ -348,8 +369,9 @@ Mitigasi:
 ### 6.5 Supabase Free "Pause"
 
 Supabase Free me-pause project setelah 7 hari tanpa koneksi. Mitigasi:
-- GitHub Actions cron harian melakukan ping ke `DATABASE_URL` (atau ke endpoint
-  `/api/health` yang menyentuh DB) → project tetap aktif.
+- `.github/workflows/backup.yml` melakukan `SELECT 1` ke database setiap hari
+  sebelum `pg_dump` → project tetap aktif.
+- `/api/health` sendiri **tidak** menyentuh database agar tetap cepat.
 
 ### 6.6 Backup
 
@@ -358,7 +380,13 @@ Supabase Free **tidak menyediakan** auto-backup. Karena itu:
 `.github/workflows/backup.yml`:
 - Cron `0 19 * * *` UTC (= 02:00 WIB).
 - `pg_dump` → gzip → artifact GitHub (retensi 14 hari).
-- Secret: `DATABASE_URL`.
+- Client PostgreSQL diambil dari repositori PGDG (versi terbaru) karena
+  `pg_dump` lama tidak bisa membuka server Supabase yang lebih baru.
+- Secret: `DATABASE_URL` (wajib; workflow gagal cepat bila kosong).
+- Workflow menormalkan URL untuk `psql`/`pg_dump`: parameter khusus Prisma
+  (`schema`, `connection_limit`, `pool_timeout`, `pgbouncer`, ...) dibuang dan
+  `sslmode=no-verify` diubah menjadi `require`. Jadi satu secret bisa dipakai
+  backend dan backup.
 
 Catatan: artifact GitHub punya retensi maksimal 90 hari dan kuota. Untuk data
 < 500 MB, 14 hari sudah cukup. Backup **off-site** (drive/Bucket) adalah
@@ -435,11 +463,15 @@ Jangan pernah `migrate reset` di produksi — itu menghapus data.
 Cek Render Dashboard → Logs. Penyebab umum:
 - `JWT_SECRET` kurang dari 32 karakter → app menolak start (sesuai desain).
 - `DATABASE_URL` kosong → app menolak start di produksi.
-- `startCommand` gagal → pastikan `npm ci` && `prisma migrate deploy` && `npm start`.
+- Migrasi di `startCommand` gagal → cek log migrasi; proses server tidak
+  dijalankan dan instance lama tetap melayani.
+- `startCommand` gagal → pastikan `npm ci --include=dev && npx prisma generate`
+  berhasil dan `npm start` bisa dijalankan dari `backend/`.
 
 ### 7.6 Frontend: "Network Error" / CORS
 
-- `CORS_ORIGIN` backend harus **persis sama** dengan origin frontend (tanpa trailing slash).
+- `CORS_ORIGIN` backend harus berisi origin frontend. Trailing slash/path
+  dinormalisasi, tetapi typo domain tetap membuat browser memblokir request.
 - `VITE_API_URL` salah → rebuild static site.
 
 ### 7.7 Token sering logout sendiri

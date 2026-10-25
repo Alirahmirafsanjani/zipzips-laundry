@@ -33,6 +33,28 @@ describe('Pesanan (order)', () => {
       expect(order.items).toHaveLength(1)
       expect(order.items[0].hargaSatuan).toBe(7000)
       expect(order.items[0].namaService).toBe('Cuci Kiloan')
+      expect(order.statusPembayaran).toBe('BELUM_BAYAR')
+      expect(order.sisaTagihan).toBe(21000)
+    })
+
+    it('menolak harga satuan di atas harga master', async () => {
+      const response = await inject(app, {
+        method: 'POST',
+        url: '/api/orders',
+        headers,
+        payload: {
+          items: [
+            {
+              serviceId: services.kiloan.id,
+              qty: 1,
+              hargaSatuan: services.kiloan.hargaDefault + 1,
+            },
+          ],
+        },
+      })
+
+      expect(response.statusCode).toBe(422)
+      expect(response.json().error.code).toBe('HARGA_MELEBIHI_MASTER')
     })
 
     it('menghasilkan nomor nota berformat ZZ-YYYYMMDD-0001', async () => {
@@ -195,6 +217,69 @@ describe('Pesanan (order)', () => {
 
       expect(response.statusCode).toBe(200)
     })
+
+    it('menolak DIAMBIL lewat endpoint status (wajib lewat serah terima)', async () => {
+      const order = await buatPesanan(app, headers, { serviceId: services.kiloan.id })
+      const operatorHeaders = (await loginAs(app, 'operator')).headers
+
+      await inject(app, {
+        method: 'PATCH',
+        url: `/api/orders/${order.id}/status`,
+        headers: operatorHeaders,
+        payload: { statusOrder: 'PROSES' },
+      })
+      await inject(app, {
+        method: 'PATCH',
+        url: `/api/orders/${order.id}/status`,
+        headers: operatorHeaders,
+        payload: { statusOrder: 'SELESAI' },
+      })
+
+      const response = await inject(app, {
+        method: 'PATCH',
+        url: `/api/orders/${order.id}/status`,
+        headers: operatorHeaders,
+        payload: { statusOrder: 'DIAMBIL' },
+      })
+
+      expect(response.statusCode).toBe(422)
+      expect(response.json().error.code).toBe('TRANSISI_INVALID')
+    })
+  })
+
+  describe('Catatan pengerjaan', () => {
+    it('operator dapat mengisi catatan pengerjaan tanpa menerima angka keuangan', async () => {
+      const order = await buatPesanan(app, headers, { serviceId: services.kiloan.id })
+      const operatorHeaders = (await loginAs(app, 'operator')).headers
+
+      const response = await inject(app, {
+        method: 'PATCH',
+        url: `/api/orders/${order.id}/catatan`,
+        headers: operatorHeaders,
+        payload: { catatanPengerjaan: 'Kerah perlu perlakuan khusus' },
+      })
+
+      expect(response.statusCode).toBe(200)
+      const data = response.json().data
+      expect(data.catatanPengerjaan).toBe('Kerah perlu perlakuan khusus')
+      expect(data.total).toBeUndefined()
+      expect(data.totalDibayar).toBeUndefined()
+      expect(data.items[0].hargaSatuan).toBeUndefined()
+    })
+
+    it('operator tidak boleh mengubah catatan pelanggan', async () => {
+      const order = await buatPesanan(app, headers, { serviceId: services.kiloan.id })
+      const operatorHeaders = (await loginAs(app, 'operator')).headers
+
+      const response = await inject(app, {
+        method: 'PATCH',
+        url: `/api/orders/${order.id}/catatan`,
+        headers: operatorHeaders,
+        payload: { catatan: 'Diubah operator' },
+      })
+
+      expect(response.statusCode).toBe(403)
+    })
   })
 
   describe('Pembatalan pesanan (void)', () => {
@@ -262,6 +347,56 @@ describe('Pesanan (order)', () => {
 
       expect(kedua.statusCode).toBe(409)
       expect(kedua.json().error.code).toBe('SUDAH_VOID')
+    })
+  })
+
+  describe('Visibilitas peran', () => {
+    it('operator tidak menerima angka keuangan dari API', async () => {
+      const order = await buatPesanan(app, headers, {
+        serviceId: services.kiloan.id,
+        qty: 2,
+      })
+      const operatorHeaders = (await loginAs(app, 'operator')).headers
+
+      const detail = await inject(app, {
+        method: 'GET',
+        url: `/api/orders/${order.id}`,
+        headers: operatorHeaders,
+      })
+      expect(detail.statusCode).toBe(200)
+      const data = detail.json().data
+      expect(data.total).toBeUndefined()
+      expect(data.totalDibayar).toBeUndefined()
+      expect(data.sisaTagihan).toBeUndefined()
+      expect(data.statusPembayaran).toBeUndefined()
+      expect(data.payments).toBeUndefined()
+      expect(data.items[0].hargaSatuan).toBeUndefined()
+      expect(data.items[0].subtotal).toBeUndefined()
+
+      const daftar = await inject(app, {
+        method: 'GET',
+        url: '/api/orders',
+        headers: operatorHeaders,
+      })
+      expect(daftar.json().data[0].total).toBeUndefined()
+
+      const layananOperator = await inject(app, {
+        method: 'GET',
+        url: '/api/services',
+        headers: operatorHeaders,
+      })
+      expect(
+        layananOperator.json().data.every((item) => item.hargaDefault === undefined),
+      ).toBe(true)
+
+      const layananKasir = await inject(app, {
+        method: 'GET',
+        url: '/api/services',
+        headers,
+      })
+      expect(
+        layananKasir.json().data.every((item) => typeof item.hargaDefault === 'number'),
+      ).toBe(true)
     })
   })
 

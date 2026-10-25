@@ -4,6 +4,8 @@ export type StatusOrder = 'DITERIMA' | 'PROSES' | 'SELESAI' | 'DIAMBIL'
 
 export type MetodeBayar = 'TUNAI' | 'QRIS' | 'TRANSFER'
 
+export type MetodeHubungi = 'WHATSAPP' | 'TELEPON' | 'LANGSUNG'
+
 export type SatuanLayanan = 'KG' | 'ITEM'
 
 export type StatusPembayaran = 'BELUM_BAYAR' | 'SEBAGIAN' | 'LUNAS' | 'VOID'
@@ -103,6 +105,14 @@ export interface Order {
   estimasiSelesai?: string | null
   tanggalSelesai?: string | null
   tanggalDiambil?: string | null
+  /** Janji bayar sisa tagihan (piutang) saat cucian diambil. */
+  jatuhTempo?: string | null
+  /** Bukti pelanggan sudah dikabari saat cucian selesai. */
+  dihubungiAt?: string | null
+  dihubungiVia?: MetodeHubungi | null
+  dihubungiOlehId?: string | null
+  dihubungiOleh?: { id: string; nama: string } | null
+  jumlahDihubungi?: number
   catatan?: string | null
   catatanPengerjaan?: string | null
   voidedAt?: string | null
@@ -146,6 +156,7 @@ export type KategoriPengeluaran =
   | 'SEWA'
   | 'TRANSPORTASI'
   | 'PERAWATAN'
+  | 'REFUND'
   | 'LAIN_LAIN'
 
 export interface Expense {
@@ -201,6 +212,12 @@ export interface DashboardSummary {
   jumlahPesananHariIni: number
   totalPesananAktif: number
   pesananSedangDikerjakan: number
+  /** Cucian SELESAI yang pelanggannya belum dikabari. */
+  belumDihubungi: number
+  /** Piutang yang sudah melewati tanggal janji bayar. */
+  piutangJatuhTempo: number
+  /** Nominal piutang jatuh tempo (hanya untuk OWNER/KASIR). */
+  piutangJatuhTempoNominal?: number
   statusCount: Record<StatusOrder, number>
   omzetTujuhHari?: Array<{ tanggal: string; omzet: number; jumlahPesanan: number }>
 }

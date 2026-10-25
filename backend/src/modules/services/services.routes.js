@@ -10,12 +10,18 @@ const router = Router()
 
 router.use(requireAuth)
 
-/** Semua peran boleh melihat daftar layanan (dipakai di POS). */
+/**
+ * Semua peran boleh melihat daftar layanan. Harga default dibuang untuk
+ * OPERATOR agar angka keuangan tidak pernah masuk ke responsnya.
+ */
 router.get(
   '/',
   asyncHandler(async (req, res) => {
     const includeInactive = req.query.includeInactive === 'true'
-    const services = await servicesService.list({ includeInactive })
+    const services = await servicesService.list({
+      includeInactive,
+      role: req.user.role,
+    })
     return ok(res, services)
   }),
 )

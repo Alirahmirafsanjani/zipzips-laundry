@@ -1,0 +1,73 @@
+# =============================================================================
+# Keep-alive API — ZIP-ZIPS LAUNDRI
+# =============================================================================
+# Render Free tidur setelah 15 menit idle. Pinger ini menjaga API tetap bangun
+# pada jam operasional (06:00–21:00 WIB) agar kasir tidak menunggu 30–50 detik
+# saat membuka aplikasi.
+#
+# Konfigurasi (Settings → Secrets and variables → Actions):
+#   API_URL = https://zipzips-api.onrender.com   (tanpa /api di akhir)
+#
+# Catatan:
+# - Cron GitHub Actions bisa terlambat beberapa menit; ini best-effort.
+# - Di luar jam operasional job tetap berjalan tetapi melewati ping, sehingga
+#   service boleh tidur dan menghemat kuota Render Free.
+# - Endpoint /api/health sengaja tidak menyentuh database.
+# =============================================================================
+
+name: Keep-alive API
+
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: keep-alive-api
+  cancel-in-progress: false
+
+jobs:
+  ping:
+    name: Ping health endpoint
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Cek jam operasional WIB
+        id: window
+        run: |
+          set -euo pipefail
+          HOUR="$(TZ=Asia/Jakarta date +%H)"
+          if [ "$HOUR" -ge 6 ] && [ "$HOUR" -lt 21 ]; then
+            echo "active=true" >> "$GITHUB_OUTPUT"
+            echo "Dalam jam operasional (${HOUR}:00 WIB)."
+          else
+            echo "active=false" >> "$GITHUB_OUTPUT"
+            echo "Di luar jam operasional (${HOUR}:00 WIB) — ping dilewati."
+          fi
+
+      - name: Ping /api/health
+        if: steps.window.outputs.active == 'true'
+        env:
+          API_URL: ${{ secrets.API_URL || vars.API_URL }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${API_URL:-}" ]; then
+            echo "::error::API_URL belum diisi. Set secret/variable API_URL di repository settings."
+            exit 1
+          fi
+
+          API_URL="${API_URL%/}"
+          echo "Ping ${API_URL}/api/health"
+          curl \
+            --fail \
+            --silent \
+            --show-error \
+            --max-time 55 \
+            --retry 1 \
+            --retry-delay 5 \
+            --user-agent "zipzips-keep-alive/1.0" \
+            "${API_URL}/api/health"
+          echo
+          echo "API merespons."

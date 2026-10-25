@@ -2,11 +2,16 @@ import { prisma } from '../../lib/prisma.js'
 import { HttpError } from '../../lib/errors.js'
 import { writeAudit } from '../../lib/audit.js'
 
-export async function list({ includeInactive = true } = {}) {
-  return prisma.service.findMany({
+export async function list({ includeInactive = true, role } = {}) {
+  const services = await prisma.service.findMany({
     where: includeInactive ? {} : { isAktif: true },
     orderBy: [{ isAktif: 'desc' }, { nama: 'asc' }],
   })
+
+  // OPERATOR hanya perlu nama/satuan untuk mengenali pekerjaan; harga tetap
+  // rahasia agar tidak bocor lewat response API.
+  if (role !== 'OPERATOR') return services
+  return services.map(({ hargaDefault, ...service }) => service)
 }
 
 export async function create(data, actor) {
@@ -22,7 +27,7 @@ export async function create(data, actor) {
       satuan: data.satuan,
       hargaDefault: data.hargaDefault,
       estimasiHari: data.estimasiHari ?? 1,
-      deskripsi: data.desripsi || null,
+      deskripsi: data.deskripsi || null,
     },
   })
 

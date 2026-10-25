@@ -36,10 +36,41 @@ if (isProd) {
   }
 }
 
-const corsOrigins = (process.env.CORS_ORIGIN || '')
-  .split(',')
-  .map((value) => value.trim())
-  .filter(Boolean)
+/**
+ * Normalisasi origin CORS.
+ *
+ * Browser mengirim header `Origin` tanpa path dan tanpa trailing slash, jadi
+ * `https://toko.com/` atau `https://toko.com/app` tidak akan pernah cocok.
+ * Kita ubah ke origin murni agar salah ketik kecil tidak membuat frontend
+ * production diblokir tanpa pesan yang jelas.
+ */
+function parseCorsOrigins(raw) {
+  return raw
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .map((value) => {
+      let url
+      try {
+        url = new URL(value)
+      } catch {
+        throw new Error(`CORS_ORIGIN tidak valid: "${value}". Contoh: https://zipzips-web.onrender.com`)
+      }
+      if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+        throw new Error(`CORS_ORIGIN harus memakai http:// atau https://: "${value}"`)
+      }
+      return url.origin
+    })
+}
+
+// Di produksi, origin frontend wajib eksplisit. Tanpa ini browser akan
+// memblokir semua request lintas-origin dan aplikasi tampak "tidak bisa login".
+const corsRaw = isProd ? requiredInProduction('CORS_ORIGIN') : process.env.CORS_ORIGIN || ''
+const corsOrigins = parseCorsOrigins(corsRaw)
+
+if (isProd && corsOrigins.length === 0) {
+  throw new Error('CORS_ORIGIN wajib berisi minimal satu origin di produksi.')
+}
 
 export const config = {
   env: NODE_ENV,

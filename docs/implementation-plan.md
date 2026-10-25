@@ -4,7 +4,7 @@ Metode: fase (phase), bukan sprint. Setiap fase menghasilkan **nilai yang bisa
 dipakai pemilik** — bukan sekadar kode. Tidak ada fase yang menunggu fase
 berikutnya untuk "berguna".
 
-Status per 22 Oktober 2026: **P1 selesai & terverifikasi (55 test lulus).**
+Status per 25 Oktober 2026: **P1 selesai & terverifikasi (83 test lulus); P5 siap deploy, menunggu remote Git.**
 
 ---
 
@@ -15,7 +15,7 @@ P1 Foundation  ✅ Selesai   ─┐
 P2 Pelanggan & Master  ✅ ─┤
 P3 Offline (P3.5)      ⬜ ─┤
 P4 Laporan & Keputusan ⬜ ─┤── 2 minggu pemakaian nyata ──┐
-P5 Deployment & Backup  ⬜ ─┘                              │
+P5 Deployment & Backup  🟡 ─┘                              │
 P6 Polish & UX          ⬜ ◀──────────────────────────────┘
 P7 Pelaporan & Ekspor   ⬜
 P8 Optimasi & Skala     ⬜
@@ -40,16 +40,16 @@ hanya menambahkan fitur di atas fondasi yang sudah benar.
 - ✅ Backend Express 5: `app.js`, `server.js`, config, middleware, lib.
 - ✅ 12 modul: health, auth, users, services, customers, orders, payments,
   inventory, finance, dashboard, settings, audit.
-- ✅ Prisma schema 14 model + 10 enum + migrasi awal + seed idempoten.
+- ✅ Prisma schema 14 model + 11 enum + migrasi awal + seed idempoten.
 - ✅ Frontend React 19: 11 halaman, UI kit 7 komponen, routing + guard.
 - ✅ Tailwind 4 dengan tema brand.
-- ✅ 55 integration test, semuanya lulus.
+- ✅ 83 integration test, semuanya lulus.
 - ✅ `tsc --noEmit` bersih, `vite build` sukses.
 
 **Verifikasi:**
 ```
-Test Files  5 passed (5)
-     Tests  55 passed (55)
+Test Files  7 passed (7)
+     Tests  83 passed (83)
 ```
 
 **Keputusan yang dikunci di fase ini:**
@@ -144,9 +144,9 @@ jadi urutan mining: P3 → P4 → P3.5 → P5.
 | Item | Deliverable |
 |---|---|
 | Supabase | Project Free dibuat, `DATABASE_URL` session pooler, schema di-migrate |
-| Render Blueprint | `render.yaml`: static site + free web service, `prisma migrate deploy` di startCommand, rewrite SPA |
-| Environment | `JWT_SECRET` acak, `CORS_ORIGIN` tepat |
-| Keep-alive | Pinger 10 menit, 06:00–21:00 WIB, endpoint `/api/health` tanpa query DB |
+| Render Blueprint | `render.yaml`: static site + free web service, migrasi di `startCommand`, `initialDeployHook` seed, rewrite SPA |
+| Environment | `JWT_SECRET` dibuat Render, `CORS_ORIGIN` divalidasi saat start, `SEED_*_PASSWORD` sekali pakai |
+| Keep-alive | `.github/workflows/keep-alive.yml`, 10 menit, 06:00–21:00 WIB, endpoint `/api/health` tanpa query DB |
 | Backup | GitHub Actions cron → `pg_dump` → artifact, retensi 14 hari |
 | Uji restore | Pulihkan artifact ke DB kosong, bandingkan jumlah baris |
 | Dokumentasi deploy | Langkah di [architecture.md](architecture.md) § 6 + README |
@@ -155,10 +155,11 @@ jadi urutan mining: P3 → P4 → P3.5 → P5.
 - [ ] Supabase project dibuat (region Singapore)
 - [ ] `DATABASE_URL` dengan `sslmode=require` (atau `no-verify` bila sertifikat self-signed)
 - [ ] `npx prisma migrate deploy` sukses
-- [ ] `npm run db:seed` → password acak dicatat
+- [ ] `SEED_*_PASSWORD` diisi; `initialDeployHook` membuat 3 user
 - [ ] `render.yaml` di-commit → Blueprint ter-deploy
 - [ ] Static site terbuka, login berhasil dari HP
 - [ ] `curl https://<api>/api/health` → `{"status":"ok"}`
+- [ ] Secret `API_URL` diisi; workflow keep-alive sukses 1×
 - [ ] Cron backup jalan 1×, artifact muncul
 - [ ] Uji restore berhasil
 

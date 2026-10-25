@@ -1,14 +1,15 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Check, Minus, Plus, Printer, ShoppingBag, Trash2, User } from 'lucide-react'
+import { Banknote, Check, Minus, Plus, Printer, ShoppingBag, Trash2, User } from 'lucide-react'
 import { api, ApiError } from '@/lib/api'
-import { formatRupiah, parseNominal } from '@/lib/format'
+import { formatQty, formatRupiah, formatTanggal, parseNominal } from '@/lib/format'
 import { Button } from '@/components/ui/Button'
 import { Card, CardBody, CardHeader } from '@/components/ui/Card'
 import { Field, Input, Select } from '@/components/ui/Input'
 import { Modal } from '@/components/ui/Modal'
 import { EmptyState, PageHeader } from '@/components/ui/EmptyState'
 import { useToast } from '@/components/ui/Toast'
+import { Receipt, DEFAULT_STORE, type StoreSettings } from '@/components/Receipt'
 import type { Customer, MetodeBayar, Order, Service } from '@/types'
 
 interface CartItem {
@@ -25,6 +26,7 @@ export function PosPage() {
 
   const [services, setServices] = useState<Service[]>([])
   const [customers, setCustomers] = useState<Customer[]>([])
+  const [settings, setSettings] = useState<StoreSettings>(DEFAULT_STORE)
   const [loading, setLoading] = useState(true)
 
   const [cart, setCart] = useState<CartItem[]>([])
@@ -36,6 +38,9 @@ export function PosPage() {
 
   const [submitting, setSubmitting] = useState(false)
   const [orderDibuat, setOrderDibuat] = useState<Order | null>(null)
+  // Satu ID untuk satu percobaan simpan. Bila jaringan putus dan kasir
+  // menekan Simpan lagi, server mengenali ID ini dan tidak membuat nota ganda.
+  const [clientRequestId, setClientRequestId] = useState(() => crypto.randomUUID())
 
   // Dialog pembayaran
   const [payOpen, setPayOpen] = useState(false)
@@ -49,13 +54,15 @@ export function PosPage() {
     let cancelled = false
     async function load() {
       try {
-        const [daftarLayanan, daftarPelanggan] = await Promise.all([
+        const [daftarLayanan, daftarPelanggan, pengaturan] = await Promise.all([
           api.get<Service[]>('/api/services?includeInactive=false'),
           api.get<Customer[]>('/api/customers?limit=100'),
+          api.get<StoreSettings>('/api/settings').catch(() => DEFAULT_STORE),
         ])
         if (cancelled) return
         setServices(daftarLayanan)
         setCustomers(daftarPelanggan)
+        setSettings({ ...DEFAULT_STORE, ...pengaturan })
       } catch (err) {
         if (!cancelled) {
           toast.error(err instanceof ApiError ? err.message : 'Gagal memuat data.')
@@ -102,10 +109,19 @@ export function PosPage() {
       current
         .map((item) =>
           item.serviceId === serviceId
-            ? { ...item, qty: item.qty + delta }
+            ? { ...item, qty: Math.max(0, Math.round((item.qty + delta) * 100) / 100) }
             : item,
         )
         .filter((item) => item.qty > 0),
+    )
+  }
+
+  /** Ketik berat langsung, mis. 2,75 kg — tidak dibulatkan ke bilangan bulat. */
+  const ubahQtyLangsung = (serviceId: string, value: number) => {
+    setCart((current) =>
+      current.map((item) =>
+        item.serviceId === serviceId ? { ...item, qty: value } : item,
+      ),
     )
   }
 
@@ -139,6 +155,7 @@ export function PosPage() {
     setNoHp('')
     setDiskon(0)
     setCatatan('')
+    setClientRequestId(crypto.randomUUID())
   }
 
   const simpanPesanan = async () => {
@@ -146,6 +163,24 @@ export function PosPage() {
       toast.error('Keranjang masih kosong.')
       return
     }
+
+    // Server menolak harga di atas master; cegah lebih awal agar kasir tidak
+    // baru mengetahui setelah menekan Simpan.
+    const melebihiMaster = cart.find((item) => {
+      const master = services.find((service) => service.id === item.serviceId)
+      return master && item.hargaSatuan > master.hargaDefault
+    })
+    if (melebihiMaster) {
+      const master = services.find(
+        (service) => service.id === melebihiMaster.serviceId,
+      )
+      toast.error(
+        `Harga ${melebihiMaster.nama} tidak boleh melebihi harga master ` +
+          `(${formatRupiah(master?.hargaDefault ?? 0)}).`,
+      )
+      return
+    }
+
     setSubmitting(true)
     try {
       const order = await api.post<Order>('/api/orders', {
@@ -159,15 +194,15 @@ export function PosPage() {
         noHp: noHp.trim() || null,
         diskon,
         catatan: catatan.trim() || null,
-        // Idempotensi: retry tidak akan membuat pesanan ganda.
-        clientRequestId: crypto.randomUUID(),
+        // Idempotensi: ID yang sama dipakai ulang bila retry, sehingga
+        // tidak menghasilkan pesanan ganda.
+        clientRequestId,
       })
 
       setOrderDibuat(order)
       resetForm()
-      setPayOpen(true)
       setMetode('TUNAI')
-      setNominal(String(order.total))
+      setNominal(String((order.total ?? 0) - (order.totalDibayar ?? 0)))
       setReferensi('')
       setPaymentKey(crypto.randomUUID())
     } catch (err) {
@@ -177,11 +212,31 @@ export function PosPage() {
     }
   }
 
+  /** Buka dialog pembayaran untuk pesanan yang baru dibuat (DP / bayar penuh). */
+  const bukaPembayaran = () => {
+    if (!orderDibuat) return
+    setNominal(
+      String(Math.max(0, (orderDibuat.total ?? 0) - (orderDibuat.totalDibayar ?? 0))),
+    )
+    setMetode('TUNAI')
+    setReferensi('')
+    setPaymentKey(crypto.randomUUID())
+    setPayOpen(true)
+  }
+
   const prosesPembayaran = async () => {
     if (!orderDibuat) return
     const nilai = parseNominal(nominal)
+    const sisa = Math.max(
+      0,
+      (orderDibuat.total ?? 0) - (orderDibuat.totalDibayar ?? 0),
+    )
     if (nilai <= 0) {
       toast.error('Nominal pembayaran harus lebih dari nol.')
+      return
+    }
+    if (metode !== 'TUNAI' && nilai > sisa) {
+      toast.error('QRIS/transfer tidak boleh melebihi sisa tagihan.')
       return
     }
     setMembayar(true)
@@ -207,9 +262,13 @@ export function PosPage() {
     }
   }
 
+  const sisaOrderDibuat = orderDibuat
+    ? Math.max(0, (orderDibuat.total ?? 0) - (orderDibuat.totalDibayar ?? 0))
+    : 0
+
   const kembalian =
     orderDibuat && metode === 'TUNAI'
-      ? Math.max(0, parseNominal(nominal) - (orderDibuat.total ?? 0))
+      ? Math.max(0, parseNominal(nominal) - sisaOrderDibuat)
       : 0
 
   return (
@@ -312,8 +371,13 @@ export function PosPage() {
                           >
                             <Minus className="size-3.5" />
                           </button>
-                          <span className="tabular w-9 text-center text-sm font-semibold">
-                            {item.qty}
+                          <QtyInput
+                            qty={item.qty}
+                            satuan={item.satuan}
+                            onChange={(value) => ubahQtyLangsung(item.serviceId, value)}
+                          />
+                          <span className="px-1 text-[11px] text-slate-500">
+                            {item.satuan.toLowerCase()}
                           </span>
                           <button
                             type="button"
@@ -442,7 +506,7 @@ export function PosPage() {
                 className="w-full"
               >
                 <Check className="size-4" />
-                Simpan & Bayar
+                Simpan Pesanan
               </Button>
             </CardBody>
           </Card>
@@ -468,11 +532,23 @@ export function PosPage() {
       >
         {orderDibuat && (
           <div className="space-y-4">
-            <div className="rounded-lg bg-slate-50 p-3 text-sm">
-              <div className="flex justify-between">
-                <span className="text-slate-600">Total tagihan</span>
+            <div className="space-y-1 rounded-lg bg-slate-50 p-3 text-sm">
+              <div className="flex justify-between text-slate-600">
+                <span>Total tagihan</span>
                 <span className="tabular font-semibold">
                   {formatRupiah(orderDibuat.total ?? 0)}
+                </span>
+              </div>
+              <div className="flex justify-between text-slate-600">
+                <span>Sudah dibayar</span>
+                <span className="tabular font-medium">
+                  {formatRupiah(orderDibuat.totalDibayar ?? 0)}
+                </span>
+              </div>
+              <div className="flex justify-between border-t border-slate-200 pt-1 font-semibold">
+                <span>Sisa tagihan</span>
+                <span className="tabular text-brand-700">
+                  {formatRupiah(sisaOrderDibuat)}
                 </span>
               </div>
             </div>
@@ -513,7 +589,7 @@ export function PosPage() {
                     <Button
                       size="sm"
                       variant="secondary"
-                      onClick={() => setNominal(String(orderDibuat.total ?? 0))}
+                      onClick={() => setNominal(String(sisaOrderDibuat))}
                     >
                       Uang pas
                     </Button>
@@ -525,7 +601,7 @@ export function PosPage() {
                             size="sm"
                             variant="secondary"
                             onClick={() =>
-                              setNominal(String((orderDibuat.total ?? 0) + nilai))
+                              setNominal(String(sisaOrderDibuat + nilai))
                             }
                           >
                             +{formatRupiah(nilai).replace('Rp', '')}
@@ -576,11 +652,18 @@ export function PosPage() {
         subtitle={orderDibuat?.nomor}
         footer={
           <>
+            {sisaOrderDibuat > 0 && (
+              <Button onClick={bukaPembayaran}>
+                <Banknote className="size-4" />
+                Bayar Sekarang
+              </Button>
+            )}
             <Button variant="outline" onClick={() => window.print()}>
               <Printer className="size-4" />
               Cetak
             </Button>
             <Button
+              variant="outline"
               onClick={() => {
                 const id = orderDibuat?.id
                 setOrderDibuat(null)
@@ -596,7 +679,7 @@ export function PosPage() {
           <div className="space-y-3 text-sm">
             <div className="flex items-center gap-2 rounded-lg bg-emerald-50 px-3 py-2 text-emerald-800">
               <Check className="size-4" />
-              Pesanan {orderDibuat.nomor} berhasil dibuat.
+              Pesanan {orderDibuat.nomor} tersimpan. Cucian siap dikerjakan.
             </div>
 
             <div className="rounded-lg border border-slate-200 p-3">
@@ -609,7 +692,8 @@ export function PosPage() {
                 {orderDibuat.items.map((item) => (
                   <li key={item.id} className="flex justify-between gap-2">
                     <span className="text-slate-600">
-                      {item.namaService} × {item.qty}
+                      {item.namaService} × {formatQty(item.qty)}{' '}
+                      {item.satuan.toLowerCase()}
                     </span>
                     <span className="tabular">
                       {formatRupiah(item.subtotal)}
@@ -627,12 +711,81 @@ export function PosPage() {
                   {formatRupiah(orderDibuat.totalDibayar)}
                 </span>
               </div>
+              <div className="mt-1 flex justify-between text-xs font-medium">
+                <span className="text-slate-500">Sisa tagihan</span>
+                <span className="tabular text-brand-700">
+                  {formatRupiah(sisaOrderDibuat)}
+                </span>
+              </div>
+              {orderDibuat.estimasiSelesai && (
+                <div className="mt-1 flex justify-between text-xs text-slate-500">
+                  <span>Estimasi selesai</span>
+                  <span className="tabular">
+                    {formatTanggal(orderDibuat.estimasiSelesai)}
+                  </span>
+                </div>
+              )}
             </div>
+
+            <p className="text-xs text-slate-500">
+              Pelanggan bisa membayar sekarang (DP/lunas) atau saat mengambil.
+              Sistem akan mengingatkan admin menghubungi pelanggan ketika cucian
+              selesai.
+            </p>
           </div>
         )}
       </Modal>
+
+      {orderDibuat && (
+        <Receipt order={orderDibuat} settings={settings} title="NOTA LAUNDRY" />
+      )}
     </>
   )
 }
 
 export default PosPage
+
+/**
+ * Input jumlah yang mendukung desimal untuk kiloan (mis. 2,75 kg).
+ * Teks lokal dipertahankan saat fokus agar mengetik "2,5" tidak ter-reset.
+ */
+function QtyInput({
+  qty,
+  satuan,
+  onChange,
+}: {
+  qty: number
+  satuan: 'KG' | 'ITEM'
+  onChange: (value: number) => void
+}) {
+  const [text, setText] = useState(() => formatQty(qty))
+  const [fokus, setFokus] = useState(false)
+
+  useEffect(() => {
+    if (!fokus) setText(formatQty(qty))
+  }, [qty, fokus])
+
+  return (
+    <Input
+      value={text}
+      onChange={(event) => {
+        const raw = event.target.value
+        setText(raw)
+        const normalized = raw.replace(',', '.')
+        const parsed = Number(normalized)
+        if (!normalized || !Number.isFinite(parsed) || parsed <= 0) return
+        const nilai =
+          satuan === 'ITEM' ? Math.round(parsed) : Math.round(parsed * 100) / 100
+        if (nilai > 0) onChange(nilai)
+      }}
+      onFocus={() => setFokus(true)}
+      onBlur={() => {
+        setFokus(false)
+        setText(formatQty(qty))
+      }}
+      inputMode="decimal"
+      className="tabular h-8 w-14 border-0 px-1 py-1 text-center text-sm font-semibold focus:ring-0"
+      aria-label={`Jumlah (${satuan.toLowerCase()})`}
+    />
+  )
+}

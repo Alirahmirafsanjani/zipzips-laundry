@@ -2,7 +2,16 @@ import { z } from 'zod'
 import { metodeBayarSchema } from '../payments/payments.schema.js'
 
 export const kategoriPengeluaranSchema = z.enum(
-  ['BAHAN_BAKU', 'GAJI', 'LISTRIK_GAS', 'SEWA', 'TRANSPORTASI', 'PERAWATAN', 'LAIN_LAIN'],
+  [
+    'BAHAN_BAKU',
+    'GAJI',
+    'LISTRIK_GAS',
+    'SEWA',
+    'TRANSPORTASI',
+    'PERAWATAN',
+    'REFUND',
+    'LAIN_LAIN',
+  ],
   { error: 'Kategori pengeluaran tidak valid' },
 )
 
