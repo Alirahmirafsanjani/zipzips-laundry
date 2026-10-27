@@ -59,6 +59,13 @@ services:
         sync: false
       - key: SEED_OPERATOR_PASSWORD
         sync: false
+      # Reset password user existing
+      - key: SEED_OWNER_PASSWORD_RESET
+        value: "true"
+      - key: SEED_KASIR_PASSWORD_RESET
+        value: "true"
+      - key: SEED_OPERATOR_PASSWORD_RESET
+        value: "true"
       - key: LOGIN_RATE_LIMIT
         value: "10"
       - key: LOG_LEVEL
