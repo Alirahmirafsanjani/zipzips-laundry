@@ -9,6 +9,7 @@ import {
   Receipt,
   Settings,
   Shirt,
+  Tag,
   UserCog,
   X,
 } from 'lucide-react'
@@ -35,6 +36,7 @@ const NAV_ITEMS: NavItem[] = [
   },
   { to: '/pos', label: 'Pesanan Baru', icon: Shirt, roles: ['OWNER', 'KASIR'] },
   { to: '/pesanan', label: 'Daftar Pesanan', icon: Receipt, roles: ['OWNER', 'KASIR', 'OPERATOR'] },
+  { to: '/layanan', label: 'Menu Layanan', icon: Tag, roles: ['OWNER'] },
   { to: '/keuangan', label: 'Keuangan', icon: Banknote, roles: ['OWNER'] },
   { to: '/pengguna', label: 'Pengguna', icon: UserCog, roles: ['OWNER'] },
   { to: '/pengaturan', label: 'Pengaturan', icon: Settings, roles: ['OWNER'] },

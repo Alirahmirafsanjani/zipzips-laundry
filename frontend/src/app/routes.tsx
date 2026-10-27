@@ -10,6 +10,7 @@ import OrdersPage from '@/pages/OrdersPage'
 import OrderDetailPage from '@/pages/OrderDetailPage'
 import FinancePage from '@/pages/FinancePage'
 import UsersPage from '@/pages/UsersPage'
+import ServicesPage from '@/pages/ServicesPage'
 import SettingsPage from '@/pages/SettingsPage'
 import NotFoundPage from '@/pages/NotFoundPage'
 
@@ -39,6 +40,14 @@ export function App() {
               />
               <Route path="pesanan" element={<OrdersPage />} />
               <Route path="pesanan/:id" element={<OrderDetailPage />} />
+              <Route
+                path="layanan"
+                element={
+                  <RequireRole roles={['OWNER']}>
+                    <ServicesPage />
+                  </RequireRole>
+                }
+              />
               <Route
                 path="keuangan"
                 element={
