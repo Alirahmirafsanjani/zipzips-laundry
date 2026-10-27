@@ -25,13 +25,14 @@ services:
     # prisma CLI ada di devDependencies, jadi --include=dev wajib.
     buildCommand: npm ci --include=dev && npx prisma generate
     # Render Free TIDAK mendukung preDeployCommand (hanya layanan berbayar).
-    # Jalankan migrasi di awal startCommand: bila migrasi gagal, server tidak
-    # start dan Render mempertahankan instance lama yang masih sehat.
-    startCommand: npm run db:deploy && npm start
-    # Seed dijalankan SEKALI setelah deploy pertama berhasil. Seed idempoten:
-    # user yang sudah ada tidak diubah passwordnya. Di produksi, seed menolak
-    # membuat password acak — isi SEED_*_PASSWORD di bawah.
-    initialDeployHook: npm run db:seed
+    # Jalankan migrasi lalu seed di awal startCommand: bila salah satunya gagal,
+    # server tidak start dan Render mempertahankan instance lama yang sehat.
+    #
+    # Seed idempoten. User yang sudah ada TIDAK diubah passwordnya kecuali
+    # SEED_*_PASSWORD_RESET=true. initialDeployHook TIDAK dipakai karena hook itu
+    # hanya jalan sekali pada deploy pertama — reset password berikutnya tidak
+    # akan pernah dieksekusi.
+    startCommand: npm run db:deploy && npm run db:seed && npm start
     healthCheckPath: /api/health
     autoDeployTrigger: commit
     envVars:
