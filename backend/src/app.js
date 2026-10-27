@@ -52,7 +52,7 @@ export function createApp() {
 
   app.use(express.json({ limit: '1mb' }))
 
-  // Rate limit global yang longgar — protects dari abuse tanpa mengganggu kasir.
+  // Rate limit global yang longgar — melindungi seluruh API tanpa mengganggu kasir.
   app.use(
     '/api',
     rateLimit({
